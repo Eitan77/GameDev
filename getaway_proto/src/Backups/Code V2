@@ -1,0 +1,306 @@
+import Phaser from "phaser";
+import planck from "planck";
+
+// ============================================================
+// PLANCK SHORT NAMES
+// ============================================================
+const pl = planck;
+const Vec2 = pl.Vec2;
+
+// ============================================================
+// UNIT CONVERSION
+// ============================================================
+const PPM = 30;
+const FIXED_DT = 1 / 60;
+
+function pxToM(px) {
+  return px / PPM;
+}
+function mToPx(m) {
+  return m * PPM;
+}
+
+// ============================================================
+// GAME SIZES (PIXELS)
+// ============================================================
+
+// Player sprite size (60x180)
+const PLAYER_W_PX = 60;
+const PLAYER_H_PX = 180;
+
+// Player half sizes (Planck boxes use HALF sizes)
+const PLAYER_HALF_W_PX = PLAYER_W_PX / 2;
+const PLAYER_HALF_H_PX = PLAYER_H_PX / 2;
+
+// Floor visual size
+const FLOOR_X_PX = 480;
+const FLOOR_Y_PX = 520;
+const FLOOR_W_PX = 960;
+const FLOOR_H_PX = 40;
+
+// Floor half sizes
+const FLOOR_HALF_W_PX = FLOOR_W_PX / 2;
+const FLOOR_HALF_H_PX = FLOOR_H_PX / 2;
+
+// Wall sizes
+const WALL_THICKNESS_PX = 40;
+const WALL_HEIGHT_PX = 1000;
+
+// Wall half sizes
+const WALL_HALF_THICKNESS_PX = WALL_THICKNESS_PX / 2;
+const WALL_HALF_H_PX = WALL_HEIGHT_PX / 2;
+
+//Balancing Metrics
+const maxUprightAngle = 7.5; // degrees
+const maxTurnAngle = 53.5; // degrees
+const balancePower = 550; // arbitrary torque value for balancing
+let hasAppliedDamping = false;
+
+let inContact = false;
+
+let isTurning = false;
+
+let turnSpeed = 30; // degrees per second
+
+
+export default class GameScene extends Phaser.Scene {
+  preload() {
+    // Load the player image
+    this.load.image("player", "assets/player.png");
+  }
+
+  create() {
+    // ============================================================
+    // VISUAL (PHASER)
+    // ============================================================
+
+    // Player sprite (we sync position + rotation from Planck body)
+    this.player = this.add.image(200, 200, "player");
+    this.player.setDisplaySize(PLAYER_W_PX, PLAYER_H_PX);
+    this.player.setOrigin(0.5, 0.5);
+
+    // Floor (visual)
+    this.floor = this.add.rectangle(
+      FLOOR_X_PX,
+      FLOOR_Y_PX,
+      FLOOR_W_PX,
+      FLOOR_H_PX,
+      0x666666
+    );
+
+    // ============================================================
+    // PHYSICS (PLANCK)
+    // ============================================================
+
+    // Gravity pulls “down” (+Y)
+    this.world = new pl.World(Vec2(0, 30));
+
+    // Player body (dynamic)
+    this.playerBody = this.world.createBody({
+      type: "dynamic",
+      position: Vec2(pxToM(500), pxToM(100)),
+      fixedRotation: false
+    });
+
+    // Player collision box
+
+    //calculate all physics off of collison box and not the image drawn over it
+
+    this.playerFixture = this.playerBody.createFixture(
+      pl.Box(pxToM(PLAYER_HALF_W_PX), pxToM(PLAYER_HALF_H_PX)),
+      { density: 1.0, friction: 0.2 }
+    );
+    this.playerFixture.setUserData("player");
+
+    // Floor body (static)
+    this.floorBody = this.world.createBody({
+      type: "static",
+      position: Vec2(pxToM(FLOOR_X_PX), pxToM(FLOOR_Y_PX))
+    });
+
+    this.floorFixture = this.floorBody.createFixture(
+      pl.Box(pxToM(FLOOR_HALF_W_PX), pxToM(FLOOR_HALF_H_PX)),
+      { friction: 0.8 }
+    );
+    this.floorFixture.setUserData("ground");
+
+    // Walls (static)
+    const floorLeftX = FLOOR_X_PX - FLOOR_HALF_W_PX;
+    const floorRightX = FLOOR_X_PX + FLOOR_HALF_W_PX;
+    const floorTopY = FLOOR_Y_PX - FLOOR_HALF_H_PX;
+
+    const wallCenterY = floorTopY - WALL_HALF_H_PX;
+    const leftWallX = floorLeftX - WALL_HALF_THICKNESS_PX;
+    const rightWallX = floorRightX + WALL_HALF_THICKNESS_PX;
+
+    this.leftWallBody = this.world.createBody({
+      type: "static",
+      position: Vec2(pxToM(leftWallX), pxToM(wallCenterY))
+    });
+    this.leftWallBody.createFixture(
+      pl.Box(pxToM(WALL_HALF_THICKNESS_PX), pxToM(WALL_HALF_H_PX)),
+      { friction: 0.0 }
+    );
+
+    this.rightWallBody = this.world.createBody({
+      type: "static",
+      position: Vec2(pxToM(rightWallX), pxToM(wallCenterY))
+    });
+    this.rightWallBody.createFixture(
+      pl.Box(pxToM(WALL_HALF_THICKNESS_PX), pxToM(WALL_HALF_H_PX)),
+      { friction: 0.0 }
+    );
+
+
+    this.world.on("begin-contact", (contact) => {
+  const a = contact.getFixtureA();
+  const b = contact.getFixtureB();
+
+  if (a === this.playerFixture || b === this.playerFixture) {
+    this.inContact = true;
+  }
+});
+
+this.world.on("end-contact", (contact) => {
+  const a = contact.getFixtureA();
+  const b = contact.getFixtureB();
+
+  if (a === this.playerFixture || b === this.playerFixture) {
+    this.inContact = false; // WARNING: wrong if you can touch multiple things at once
+  }
+});
+
+
+
+
+
+    // ============================================================
+    // FIXED TIMESTEP ACCUMULATOR
+    // ============================================================
+    this.acc = 0;
+
+    // ============================================================
+    // INPUT (READ W/E ONLY)
+    // ============================================================
+    this.keys = this.input.keyboard.addKeys({
+      turnLeft: "W",
+      turnRight: "E"
+    });
+
+    // ============================================================
+    // INPUT STATE (STORED EACH FRAME)
+    // ============================================================
+    this.inputTurnLeft = false;
+    this.inputTurnRight = false;
+
+    //test balance by setting to 45 degrees
+    this.playerBody.setAngle(Phaser.Math.DegToRad(60));
+  }
+
+  update(_, dtMs) {
+    //output player rotation to console
+    console.log("Player rotation:", this.GetRotation());
+    // ============================================================
+    // READ INPUT (NO MOVEMENT/APPLYING ROTATION HERE)
+    // ============================================================
+    this.inputTurnLeft = this.keys.turnLeft.isDown;
+    this.inputTurnRight = this.keys.turnRight.isDown;
+
+    // ============================================================
+    // STEP PHYSICS (WORLD STILL RUNS)
+    // ============================================================
+    const dt = dtMs / 1000;
+    this.acc += dt;
+
+    while (this.acc >= FIXED_DT) {
+      this.world.step(FIXED_DT);
+      this.acc -= FIXED_DT;
+    }
+
+    // ============================================================
+    // SYNC PHASER SPRITE TO PLANCK BODY
+    // ============================================================
+    const p = this.playerBody.getPosition();
+    this.player.x = mToPx(p.x);
+    this.player.y = mToPx(p.y);
+    this.player.rotation = this.playerBody.getAngle();
+
+    if(isTurning){
+      this.Turn();
+    }
+    else{
+      this.Balance();
+    }
+
+    //implement keys to turn / use thisframe 
+    if (this.inputTurnLeft) {
+      //print to console
+      console.log("Left turn");
+      this.startTurn(false); // false for left turn
+    }
+    if (this.inputTurnRight) {
+      this.startTurn(true); // true for right turn
+    }
+}
+
+  Balance() {
+
+    this.rotation = this.GetRotation();
+    if(Math.abs(this.rotation) > maxUprightAngle) {
+      // Apply corrective torque or rotation to balance the player if in constact with ground
+      if(this.inContact) {
+        this.playerBody.applyTorque(-Math.sign(this.rotation) * balancePower);
+        hasAppliedDamping = false;
+      }
+    }
+    else{
+      if(hasAppliedDamping==false){
+        // Within upright range, apply damping to stabilize if in contact with ground
+        if(this.inContact) {
+          this.playerBody.setAngularVelocity(this.playerBody.getAngularVelocity() * 0.001);
+          hasAppliedDamping = true;
+        }
+      }
+    } 
+
+  }
+
+
+  GetRotation() {
+    // ensure value is between -180 and 180 degrees, with 0 as upright
+    //convert radians to degrees and then subtract to get between -180 and 180
+    let rot = this.player.rotation * (180 / Math.PI);
+    if (rot > 180) {
+      rot -= 360;
+    } 
+    return rot;
+}
+
+  startTurn(turnRight){
+
+    if(isTurning || !this.isGrounded()){ return;} // Prevent starting a new turn while already turning
+      
+    this.turnRight = turnRight
+    isTurning = true; 
+  }
+  Turn(){
+    const rot = this.GetRotation();
+    const dir = this.turnRight ? 1 : -1;
+
+    if(rot*dir < maxTurnAngle){
+    //set rotation to current + turnspeed 
+    this.playerBody.setAngle(Phaser.Math.DegToRad(rot+ dir*turnSpeed*FIXED_DT));}
+      
+  }
+
+  isGrounded(){
+    return true;
+  }
+
+
+//every time the player collies with the floorm set isInContact to true
+
+
+
+
+}

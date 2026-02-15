@@ -1,0 +1,17 @@
+{
+  "name": "getaway-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon src/index.js",
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@colyseus/schema": "^4.0.11",
+    "colyseus": "^0.17.8",
+    "express": "^4.18.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.0"
+  }
+}
