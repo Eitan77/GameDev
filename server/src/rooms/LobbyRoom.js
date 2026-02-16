@@ -1,7 +1,14 @@
 // ============================================================
 // server/src/rooms/LobbyRoom.js
-// Server-authoritative physics + guns (fixed step).
-// FIX: accumulator-based fixed timestep so the sim never runs in slow motion.
+// Server-authoritative physics + collisions + guns.
+//
+// Goals (efficiency + correct authority split):
+// - Server runs ALL physics/collisions and decides ALL game events.
+// - Client renders only.
+// - Inputs are compacted to reduce bandwidth.
+// - State patches are throttled (physics stays at 60Hz).
+//
+// ✅ accumulator-based fixed timestep so the sim never runs in slow motion.
 // ============================================================
 
 import { Room } from "colyseus";
@@ -20,8 +27,8 @@ import { loadTiledMapToPlanck, getObjectPoints } from "../sim/loadTiledMap.js";
 // TUNE THESE
 // --------------------
 const SERVER_TICK_HZ = 60;       // physics tick rate (true sim rate)
-const SERVER_PATCH_HZ = 60;      // how often state patches are sent to clients
-const SIM_LOOP_HZ = 120;         // how often we "wake up" to process time (does NOT change physics rate)
+const SERVER_PATCH_HZ = 30;      // ✅ throttle state patches (bandwidth), keep physics at 60
+const SIM_LOOP_HZ = 60;          // ✅ wake-up rate (CPU). Physics still fixed at SERVER_TICK_HZ.
 const MAX_CATCHUP_STEPS = 10;     // prevent spiral of death if server is very behind
 
 const FIXED_DT = 1 / SERVER_TICK_HZ;
@@ -83,7 +90,30 @@ export default class LobbyRoom extends Room {
     this.powerUpRespawnTimers = new Map();  // puId -> timeout
 
     this.onMessage("input", (client, msg) => {
-      this.playerInputs.set(client.sessionId, msg || {});
+      // Accept both the new compact input format AND the old verbose one.
+      // Compact format:
+      //   { b: bitmask, f: fireSeq, x?: dragX, y?: dragY }
+      //     bit 0 = tiltLeft, bit 1 = tiltRight, bit 2 = dragActive
+      const raw = msg || {};
+      const b = Number(raw.b);
+
+      if (Number.isFinite(b)) {
+        const tiltLeft = !!(b & 1);
+        const tiltRight = !!(b & 2);
+        const dragActive = !!(b & 4);
+
+        this.playerInputs.set(client.sessionId, {
+          tiltLeft,
+          tiltRight,
+          dragActive,
+          dragX: dragActive ? Number(raw.x) : undefined,
+          dragY: dragActive ? Number(raw.y) : undefined,
+          fireSeq: Number(raw.f) | 0,
+        });
+      } else {
+        // Old format (kept for backwards compatibility)
+        this.playerInputs.set(client.sessionId, raw);
+      }
     });
 
     // ----------------------------
@@ -129,7 +159,12 @@ export default class LobbyRoom extends Room {
 
   broadcastSound(key, volume = 1, rate = 1) {
     if (!key) return;
-    this.broadcast("sound", { key, volume, rate });
+    // Compact keys for bandwidth
+    this.broadcast("sound", {
+      k: key,
+      v: volume,
+      r: rate,
+    });
   }
 
   simLoop() {
@@ -239,10 +274,10 @@ export default class LobbyRoom extends Room {
       if (e.kind === "shot") {
         this.broadcast("shot", e);
       } else if (e.kind === "sound") {
-        this.broadcastSound(e.key, e.volume, e.rate);
+        this.broadcastSound(e.k, e.v, e.r);
       } else if (e.kind === "soundDelayed") {
         const delayMs = Math.max(0, Number(e.delaySec ?? 0)) * 1000;
-        setTimeout(() => this.broadcastSound(e.key, e.volume, e.rate), delayMs);
+        setTimeout(() => this.broadcastSound(e.k, e.v, e.r), delayMs);
       }
     }
   }
