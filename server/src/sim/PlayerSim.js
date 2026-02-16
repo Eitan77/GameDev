@@ -40,6 +40,10 @@ const TILT_PAST_MAX_EPS_RAD = 0.001;
 
 const JUMP_SPEED_PX_PER_SEC = 950;
 
+// If the player's tilt angle (absolute) is ABOVE this, releasing tilt does NOT jump.
+// (Requested: start at 80°)
+const MAX_JUMP_ANGLE_DEG = 80;
+
 export const MOUSE_GRAB_RADIUS_PX = 140;
 const MOUSE_DRAG_MAX_FORCE = 9000;
 const MOUSE_DRAG_FREQUENCY_HZ = 10;
@@ -63,6 +67,7 @@ const ARM_SHOULDER_LOCAL_X_PX = -8;
 const ARM_SHOULDER_LOCAL_Y_PX = -25;
 
 const TILT_MAX_ANGLE_RAD = (TILT_MAX_ANGLE_DEG * Math.PI) / 180;
+const MAX_JUMP_ANGLE_RAD = (MAX_JUMP_ANGLE_DEG * Math.PI) / 180;
 const TILT_ROTATE_SPEED_RAD_PER_SEC = (TILT_ROTATE_SPEED_DEG_PER_SEC * Math.PI) / 180;
 
 // defaults if missing
@@ -431,19 +436,30 @@ export default class PlayerSim {
     this.body.setLinearVelocity(Vec2(v.x, 0));
   }
 
+  // ------------------------------------------------------------
+  // Tilt release "jump"
+  // ------------------------------------------------------------
   doTiltReleaseJump() {
     const angleNow = wrapRadPi(this.body.getAngle());
-    const clampedAng = clamp(angleNow, -TILT_MAX_ANGLE_RAD, +TILT_MAX_ANGLE_RAD);
+
+    if (Math.abs(angleNow) > MAX_JUMP_ANGLE_RAD) {
+      return false;
+    }
+
+    const angForJump = clamp(angleNow, -Math.PI / 2, +Math.PI / 2);
 
     const jumpSpeedMps = this.pxToM(JUMP_SPEED_PX_PER_SEC);
-    const vx = Math.sin(clampedAng) * jumpSpeedMps;
-    const vy = -Math.cos(clampedAng) * jumpSpeedMps;
+
+    const vx = Math.sin(angForJump) * jumpSpeedMps;
+    const vy = -Math.cos(angForJump) * jumpSpeedMps;
 
     this.body.setLinearVelocity(Vec2(vx, vy));
     this.body.setAngularVelocity(0);
 
     this.groundGraceTimer = 0;
     this.touchingGround = false;
+
+    return true;
   }
 
   // --------------------------
@@ -534,7 +550,6 @@ export default class PlayerSim {
     };
   }
 
-  // ✅ EXACT muzzle world point like old client computeGunMuzzleWorldPx()
   computeGunMuzzleWorldPx() {
     const pose = this.computeGunPosePx();
     if (!pose) return null;
@@ -556,7 +571,6 @@ export default class PlayerSim {
     return { x: worldX, y: worldY };
   }
 
-  // ✅ EXACT forward direction like old getGunForwardUnit()
   getGunForwardUnit() {
     const pose = this.computeGunPosePx();
     if (!pose) return null;
@@ -572,8 +586,6 @@ export default class PlayerSim {
     return { x: dx / len, y: dy / len };
   }
 
-  // ✅ EXACT raycast like old raycastBeamEndPx()
-  // (extended to also report which player got hit, without changing the end-point behavior)
   raycastBeamHitPx(startPx, dirUnit, maxDistPx) {
     const startM = Vec2(this.pxToM(startPx.x), this.pxToM(startPx.y));
     const endPx = { x: startPx.x + dirUnit.x * maxDistPx, y: startPx.y + dirUnit.y * maxDistPx };
@@ -586,7 +598,6 @@ export default class PlayerSim {
     this.world.rayCast(startM, endM, (fixture, point, _normal, fraction) => {
       if (!fixture) return -1;
 
-      // ignore sensors (arms, etc.)
       if (typeof fixture.isSensor === "function" && fixture.isSensor()) return -1;
 
       const body = fixture.getBody();
@@ -596,7 +607,6 @@ export default class PlayerSim {
         bestFraction = fraction;
         bestPointM = point;
 
-        // Track who we hit (if it's a player body)
         const ud = (typeof body.getUserData === "function") ? body.getUserData() : null;
         if (ud && typeof ud === "object" && ud.kind === "player" && typeof ud.sessionId === "string") {
           bestHitSessionId = ud.sessionId;
@@ -612,14 +622,16 @@ export default class PlayerSim {
     return { endPx: hitEndPx, hitSessionId: bestHitSessionId };
   }
 
-  // Backwards compatible: return only the end point (exact same behavior as before)
   raycastBeamEndPx(startPx, dirUnit, maxDistPx) {
     return this.raycastBeamHitPx(startPx, dirUnit, maxDistPx).endPx;
   }
 
   // Called by LobbyRoom each tick BEFORE world.step
   applyInput(input, fixedDt) {
-    // facing from input
+    // facing from input (visual only)
+    // We still update facingDir so the CLIENT flips the player model,
+    // but we DO NOT rebuild/re-anchor the arm physics when facing changes.
+    // This keeps the arm's world pose stable when you switch directions.
     if (input) {
       const leftDown = !!input.tiltLeft;
       const rightDown = !!input.tiltRight;
@@ -627,9 +639,9 @@ export default class PlayerSim {
       if (leftDown && !rightDown) this.facingDir = -1;
       else if (rightDown && !leftDown) this.facingDir = +1;
 
+      // Track changes (useful for debugging / future logic), but do not rebuild the arm.
       if (this.facingDir !== this.prevFacingDir) {
         this.prevFacingDir = this.facingDir;
-        this.rebuildArmForFacing();
       }
     }
 
@@ -651,7 +663,6 @@ export default class PlayerSim {
 
       const def = this.gunCatalog?.[this.gunId];
       if (def && this.ammo > 0 && def.bulletEnabled) {
-        // consume ammo
         this.ammo = Math.max(0, (this.ammo - 1) | 0);
 
         const muzzle = this.computeGunMuzzleWorldPx();
@@ -674,7 +685,6 @@ export default class PlayerSim {
             color: Number(def.bulletColor ?? 0xffffff),
           });
 
-          // apply damage (server authoritative)
           const dmg = Number(def.damage ?? 0);
           if (dmg > 0 && hit.hitSessionId && hit.hitSessionId !== this.sessionId) {
             events.push({
@@ -686,7 +696,6 @@ export default class PlayerSim {
             });
           }
 
-          // fire sound
           if (def.fireSoundKey) {
             events.push({
               kind: "sound",
@@ -696,7 +705,6 @@ export default class PlayerSim {
             });
           }
 
-          // reload sound only if NOT last bullet
           if (this.ammo > 0 && def.reloadSoundKey) {
             events.push({
               kind: "soundDelayed",
@@ -708,7 +716,6 @@ export default class PlayerSim {
           }
         }
 
-        // drop gun when ammo hits 0 (old behavior)
         if (this.ammo <= 0) {
           this.dropGun();
         }
@@ -737,11 +744,13 @@ export default class PlayerSim {
     }
 
     if (tiltAllowedNow && this.prevTiltDir !== 0 && tiltDir === 0) {
-      this.doTiltReleaseJump();
+      const didJump = this.doTiltReleaseJump();
+
       this.prevTiltDir = 0;
       this.activePivotSide = 0;
       this.holdPastMaxActive = false;
-      return events;
+
+      if (didJump) return events;
     }
 
     if (tiltAllowedNow && tiltDir !== 0) {
@@ -796,7 +805,6 @@ export default class PlayerSim {
     return events;
   }
 
-  // After world.step, use this snapshot for state
   getStateSnapshot() {
     const p = this.body.getPosition();
 
@@ -818,7 +826,6 @@ export default class PlayerSim {
       gunId: this.gunId,
       ammo: this.ammo,
 
-      // optional debug (client doesn't need these, but harmless)
       gunX: gunPose ? Math.round(gunPose.gunX) : 0,
       gunY: gunPose ? Math.round(gunPose.gunY) : 0,
       gunA: gunPose ? gunPose.gunA : 0,
