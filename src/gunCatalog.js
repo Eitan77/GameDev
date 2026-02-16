@@ -30,6 +30,9 @@ export const GUN_CATALOG = {
     // ammo
     ammo: 5,
 
+    // damage per hit (server authoritative)
+    damage: 50,
+
     // sounds
     pickupSoundKey: "sniper_pickup_snd",
     pickupSoundPath: "assets/audio/sniper_pickup.mp3",

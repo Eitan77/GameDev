@@ -2,13 +2,12 @@
 // server/src/rooms/LobbyRoom.js
 // Server-authoritative physics + collisions + guns.
 //
-// Goals (efficiency + correct authority split):
-// - Server runs ALL physics/collisions and decides ALL game events.
-// - Client renders only.
-// - Inputs are compacted to reduce bandwidth.
-// - State patches are throttled (physics stays at 60Hz).
+// Change requested:
+// ✅ Patch state at 60Hz (60 snapshots/sec) so client can snap without interpolation.
 //
-// ✅ accumulator-based fixed timestep so the sim never runs in slow motion.
+// Notes:
+// - Physics still runs at 60Hz.
+// - Patch rate at 60Hz increases bandwidth (more frequent state updates).
 // ============================================================
 
 import { Room } from "colyseus";
@@ -27,14 +26,21 @@ import { loadTiledMapToPlanck, getObjectPoints } from "../sim/loadTiledMap.js";
 // TUNE THESE
 // --------------------
 const SERVER_TICK_HZ = 60;       // physics tick rate (true sim rate)
-const SERVER_PATCH_HZ = 30;      // ✅ throttle state patches (bandwidth), keep physics at 60
-const SIM_LOOP_HZ = 60;          // ✅ wake-up rate (CPU). Physics still fixed at SERVER_TICK_HZ.
-const MAX_CATCHUP_STEPS = 10;     // prevent spiral of death if server is very behind
+const SERVER_PATCH_HZ = 60;      // ✅ 60 snapshots/sec
+const SIM_LOOP_HZ = 60;          // wake-up rate (CPU). Physics still fixed at SERVER_TICK_HZ.
+const MAX_CATCHUP_STEPS = 10;    // prevent spiral of death if server is very behind
 
 const FIXED_DT = 1 / SERVER_TICK_HZ;
 const FIXED_DT_MS = 1000 / SERVER_TICK_HZ;
 
 const GRAVITY_Y = 40;
+
+// --------------------
+// Health / respawn
+// --------------------
+const DEFAULT_MAX_HEALTH = 100;
+const RESPAWN_X = 600;
+const RESPAWN_Y = 600;
 
 // Try both “run from /server” and “run from repo root”
 const MAP_CANDIDATES = [
@@ -56,7 +62,7 @@ export default class LobbyRoom extends Room {
   onCreate() {
     this.setState(new LobbyState());
 
-    // ✅ Higher patch rate = smoother client view (not slow-motion fix, but helps feel)
+    // ✅ Patch state 60Hz
     const patchMs = Math.max(1, Math.round(1000 / SERVER_PATCH_HZ));
     if (typeof this.setPatchRate === "function") this.setPatchRate(patchMs);
     else this.patchRate = patchMs;
@@ -90,8 +96,7 @@ export default class LobbyRoom extends Room {
     this.powerUpRespawnTimers = new Map();  // puId -> timeout
 
     this.onMessage("input", (client, msg) => {
-      // Accept both the new compact input format AND the old verbose one.
-      // Compact format:
+      // Compact input format:
       //   { b: bitmask, f: fireSeq, x?: dragX, y?: dragY }
       //     bit 0 = tiltLeft, bit 1 = tiltRight, bit 2 = dragActive
       const raw = msg || {};
@@ -111,14 +116,12 @@ export default class LobbyRoom extends Room {
           fireSeq: Number(raw.f) | 0,
         });
       } else {
-        // Old format (kept for backwards compatibility)
+        // Old format (backwards compatibility)
         this.playerInputs.set(client.sessionId, raw);
       }
     });
 
-    // ----------------------------
-    // ✅ Real-time fixed-step loop
-    // ----------------------------
+    // fixed-step loop
     this._accMs = 0;
     this._lastMs = performance.now();
 
@@ -132,6 +135,9 @@ export default class LobbyRoom extends Room {
     ps.y = 600;
     ps.a = 0;
     ps.dir = 1;
+
+    ps.maxHealth = DEFAULT_MAX_HEALTH;
+    ps.health = DEFAULT_MAX_HEALTH;
 
     this.state.players.set(client.sessionId, ps);
 
@@ -167,14 +173,35 @@ export default class LobbyRoom extends Room {
     });
   }
 
+  getRespawnPoint() {
+    return { x: RESPAWN_X, y: RESPAWN_Y };
+  }
+
+  respawnPlayer(sessionId) {
+    const st = this.state.players.get(sessionId);
+    const sim = this.playerSims.get(sessionId);
+    if (!st || !sim) return;
+
+    const pt = this.getRespawnPoint();
+
+    // reset health
+    const mh = Number(st.maxHealth) || DEFAULT_MAX_HEALTH;
+    st.maxHealth = mh;
+    st.health = mh;
+
+    // drop everything and teleport (movement logic unchanged)
+    sim.respawnAt(pt.x, pt.y);
+
+    // clear input so you don't instantly "release jump" etc.
+    this.playerInputs.set(sessionId, {});
+  }
+
   simLoop() {
     const now = performance.now();
     let frameMs = now - this._lastMs;
     this._lastMs = now;
 
-    // prevent insane catch-up if the process pauses (debugger/tab switch/etc.)
     if (frameMs > 250) frameMs = 250;
-
     this._accMs += frameMs;
 
     let steps = 0;
@@ -184,14 +211,13 @@ export default class LobbyRoom extends Room {
       steps++;
     }
 
-    // If we’re *way* behind, drop the remainder instead of staying in slow-mo forever
     if (steps === MAX_CATCHUP_STEPS) {
       this._accMs = 0;
     }
   }
 
   fixedStep() {
-    // 1) apply inputs (forces + shots)
+    // 1) apply inputs
     const allEvents = [];
 
     for (const [sid, sim] of this.playerSims.entries()) {
@@ -203,7 +229,31 @@ export default class LobbyRoom extends Room {
     // 2) physics step
     this.world.step(FIXED_DT);
 
-    // 3) pickups (after movement)
+    // 2.5) apply damage events (sniper hitscan)
+    // NOTE: This does NOT change physics/movement; it only updates health + respawn.
+    const alreadyRespawned = new Set();
+    for (const e of allEvents) {
+      if (!e || e.kind !== "damage") continue;
+
+      const to = String(e.to || "");
+      if (!to) continue;
+      if (alreadyRespawned.has(to)) continue;
+
+      const st = this.state.players.get(to);
+      if (!st) continue;
+
+      const dmg = Math.max(0, Number(e.amount) || 0);
+      const hpNow = Number(st.health) || 0;
+      const hpNew = Math.max(0, hpNow - dmg);
+      st.health = hpNew;
+
+      if (hpNew <= 0) {
+        alreadyRespawned.add(to);
+        this.respawnPlayer(to);
+      }
+    }
+
+    // 3) pickups
     for (const sim of this.playerSims.values()) {
       if (sim.hasGun()) continue;
 
@@ -273,11 +323,22 @@ export default class LobbyRoom extends Room {
     for (const e of allEvents) {
       if (e.kind === "shot") {
         this.broadcast("shot", e);
+
       } else if (e.kind === "sound") {
-        this.broadcastSound(e.k, e.v, e.r);
+        // ✅ Support both formats: compact (k/v/r) and verbose (key/volume/rate)
+        const key = e.k ?? e.key;
+        const vol = e.v ?? e.volume ?? 1;
+        const rate = e.r ?? e.rate ?? 1;
+        this.broadcastSound(key, vol, rate);
+
       } else if (e.kind === "soundDelayed") {
         const delayMs = Math.max(0, Number(e.delaySec ?? 0)) * 1000;
-        setTimeout(() => this.broadcastSound(e.k, e.v, e.r), delayMs);
+
+        const key = e.k ?? e.key;
+        const vol = e.v ?? e.volume ?? 1;
+        const rate = e.r ?? e.rate ?? 1;
+
+        setTimeout(() => this.broadcastSound(key, vol, rate), delayMs);
       }
     }
   }

@@ -5,13 +5,18 @@
 // - Client renders sprites, VFX, and plays audio.
 // - Client sends compact inputs.
 //
-// Efficiency changes vs the old version:
-// - Uses Colyseus Schema callbacks directly (no per-field "listen" fanout).
-// - Compact network messages for input/sound/shot.
+// FIX FOR YOUR CAMERA "GHOST":
+// ✅ Remove custom follow-point deadzone (it was causing jitter when camera scroll begins)
+// ✅ Use Phaser's built-in camera deadzone instead (stable, no feedback loop)
+//
+// Also includes:
+// ✅ Duplicate-guard: if onAdd fires twice for same sessionId, destroy old sprites first
+// ✅ Cleanup on scene shutdown so listeners/rooms don’t stack
 // ============================================================
 
 import Phaser from "phaser";
 import { Client } from "@colyseus/sdk";
+import { Callbacks } from "@colyseus/schema";
 
 import GameMap from "./GameMap.js";
 import Player from "./player.js";
@@ -23,10 +28,30 @@ import { preloadGuns } from "./gunCatalog.js";
 const COLYSEUS_URL = `${window.location.protocol}//${window.location.hostname}:2567`;
 const ROOM_NAME = "lobby";
 
-// outgoing input rate (note: we still only send on change)
 export const NET_SEND_HZ = 60;
 
-// For your drag grab
+// ------------------------------------------------------------
+// Camera tuning
+// ------------------------------------------------------------
+const CAMERA_ZOOM = 0.7;
+
+// Keep same feel as before (1 = instant, no extra smoothing)
+const CAMERA_FOLLOW_LERP_X = 1;
+const CAMERA_FOLLOW_LERP_Y = 1;
+
+// Deadzone rectangle size IN SCREEN PIXELS.
+const CAMERA_DEADZONE_W_PX = 420;
+const CAMERA_DEADZONE_H_PX = 260;
+
+// Where in the screen the follow target "rests"
+const CAMERA_DEADZONE_ANCHOR_X = 0.5;
+const CAMERA_DEADZONE_ANCHOR_Y = 0.55;
+
+// IMPORTANT: with zoom != 1, rounding pixels can cause “double/ghost” look on scroll.
+// This is the #1 common cause of ghosting when the camera moves.
+// Set false for smooth scrolling.
+const CAMERA_ROUND_PIXELS = false;
+
 const MOUSE_GRAB_RADIUS_PX = 140;
 
 // beam helper
@@ -70,7 +95,6 @@ function redrawBeamMask(canvasTex, fadeFrontPx, tailLenPx) {
 }
 
 function spawnBeam(scene, msg) {
-  // Supports both old verbose keys and new compact keys.
   const sx = Number(msg?.sx) || 0;
   const sy = Number(msg?.sy) || 0;
   const ex = Number(msg?.ex) || 0;
@@ -92,10 +116,14 @@ function spawnBeam(scene, msg) {
   beamImg.setDisplaySize(len, widthPx);
   beamImg.setTint(color);
   beamImg.rotation = ang;
-  beamImg.setDepth(999);
+  beamImg.setDepth(99);
 
   const maskKey = `beam_mask_${Date.now()}_${Math.floor(Math.random() * 1e9)}`;
-  const maskTex = scene.textures.createCanvas(maskKey, Math.max(2, Math.ceil(len)), Math.max(2, Math.ceil(widthPx)));
+  const maskTex = scene.textures.createCanvas(
+    maskKey,
+    Math.max(2, Math.ceil(len)),
+    Math.max(2, Math.ceil(widthPx))
+  );
 
   const maskImg = scene.add.image(sx, sy, maskKey);
   maskImg.setOrigin(0, 0.5);
@@ -135,12 +163,11 @@ export default class GameScene extends Phaser.Scene {
 
     this.map = null;
 
-    this.players = new Map();   // sessionId -> Player(view)
+    this.players = new Map();
     this.localPlayer = null;
 
-    this.powerUps = new Map();  // powerUpId -> PowerUp(view)
+    this.powerUps = new Map();
 
-    // Input state
     this.dragActive = false;
     this.dragX = 0;
     this.dragY = 0;
@@ -150,6 +177,9 @@ export default class GameScene extends Phaser.Scene {
     this.lastSent = null;
 
     this.statusText = null;
+    this.callbacks = null;
+
+    this._cleanupRegistered = false;
   }
 
   preload() {
@@ -172,12 +202,11 @@ export default class GameScene extends Phaser.Scene {
       .setScrollFactor(0)
       .setDepth(2000);
 
-    // Keys
     this.keyTiltLeft = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.W);
     this.keyTiltRight = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.E);
     this.keyFire = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.R);
 
-    // Drag input (render-only client; server applies the joint)
+    // Drag input
     this.input.on("pointerdown", (pointer) => {
       if (!this.localPlayer?.sprite) return;
 
@@ -213,72 +242,108 @@ export default class GameScene extends Phaser.Scene {
     try {
       this.client = new Client(COLYSEUS_URL);
       this.room = await this.client.joinOrCreate(ROOM_NAME);
+      this.callbacks = Callbacks.get(this.room);
       this.statusText.setText(`Connected: ${COLYSEUS_URL}`);
+
+      this.registerCleanup();
     } catch (e) {
       console.error("Failed to connect to Colyseus:", e);
       this.statusText.setText(`Server offline at ${COLYSEUS_URL}`);
       return;
     }
 
+    // Resize hook
+    this.scale.on("resize", () => this.applyCameraTuning());
+
     // --- State bindings (players) ---
-    const players = this.room.state.players;
-    players.onAdd = (playerState, sessionId) => {
+    this.callbacks.onAdd("players", (playerState, sessionId) => {
       const isLocal = sessionId === this.room.sessionId;
+
+      // ✅ prevent duplicate sprites (ghost look)
+      const existing = this.players.get(sessionId);
+      if (existing) {
+        existing.destroy();
+        this.players.delete(sessionId);
+      }
 
       const p = new Player({ scene: this, sessionId, isLocal });
       this.players.set(sessionId, p);
+
       p.setTargetFromState(playerState);
 
       if (isLocal) {
         this.localPlayer = p;
-        this.cameras.main.startFollow(p.sprite, true, 0.15, 0.15);
+
+        // ✅ follow the ACTUAL player sprite (no custom follow-point)
+        this.cameras.main.startFollow(
+          p.sprite,
+          CAMERA_ROUND_PIXELS,
+          CAMERA_FOLLOW_LERP_X,
+          CAMERA_FOLLOW_LERP_Y
+        );
+
+        this.applyCameraTuning();
       }
 
-      // One callback per player state (instead of per-field listeners)
-      playerState.onChange = (changes) => {
-        p.applyStateChanges(changes, playerState);
-      };
-    };
+      if (playerState && Object.prototype.hasOwnProperty.call(playerState, "onChange")) {
+        playerState.onChange = (changes) => {
+          if (typeof p.applyStateChanges === "function") p.applyStateChanges(changes, playerState);
+          else p.setTargetFromState(playerState);
+        };
+      } else {
+        const refresh = () => p.setTargetFromState(playerState);
+        ["x","y","a","armX","armY","armA","dir","gunId","ammo","maxHealth","health","gunX","gunY","gunA"].forEach((k) => {
+          this.callbacks.listen(playerState, k, refresh);
+        });
+      }
+    });
 
-    players.onRemove = (_playerState, sessionId) => {
+    this.callbacks.onRemove("players", (_playerState, sessionId) => {
       const p = this.players.get(sessionId);
       if (p) {
         p.destroy();
         this.players.delete(sessionId);
       }
-      if (this.localPlayer?.sessionId === sessionId) this.localPlayer = null;
-    };
 
-    // Trigger onAdd for any entries that already exist in the initial state.
-    players.forEach((playerState, sessionId) => players.onAdd?.(playerState, sessionId));
+      if (this.localPlayer?.sessionId === sessionId) {
+        this.localPlayer = null;
+        this.cameras.main.stopFollow();
+      }
+    });
 
     // --- State bindings (powerups) ---
-    const powerUps = this.room.state.powerUps;
-    powerUps.onAdd = (puState, puId) => {
+    this.callbacks.onAdd("powerUps", (puState, puId) => {
+      const existing = this.powerUps.get(puId);
+      if (existing) {
+        try { existing.destroy?.(); } catch (_) {}
+        this.powerUps.delete(puId);
+      }
+
       const view = this.createPowerUpView(puState);
       if (!view) return;
 
       view.syncFromState(puState);
       this.powerUps.set(puId, view);
 
-      puState.onChange = (changes) => {
-        view.applyStateChanges(changes, puState);
-      };
-    };
+      if (puState && Object.prototype.hasOwnProperty.call(puState, "onChange")) {
+        puState.onChange = (changes) => view.applyStateChanges(changes, puState);
+      } else {
+        this.callbacks.listen(puState, "active", (active) => view.setActive(!!active));
+        this.callbacks.listen(puState, "x", (x) => view.setPosition(Number(x) || 0, view.sprite?.y ?? 0));
+        this.callbacks.listen(puState, "y", (y) => view.setPosition(view.sprite?.x ?? 0, Number(y) || 0));
+      }
+    });
 
-    powerUps.onRemove = (_puState, puId) => {
+    this.callbacks.onRemove("powerUps", (_puState, puId) => {
       const view = this.powerUps.get(puId);
       if (view) view.destroy();
       this.powerUps.delete(puId);
-    };
+    });
 
-    powerUps.forEach((puState, puId) => powerUps.onAdd?.(puState, puId));
-
-    // --- Events (server authoritative) ---
+    // --- Events ---
     this.room.onMessage("shot", (msg) => spawnBeam(this, msg));
 
     this.room.onMessage("sound", (msg) => {
-      // Supports both old keys and new compact keys.
       const key = msg?.k ?? msg?.key;
       if (!key) return;
       if (!this.cache.audio.exists(key)) return;
@@ -286,83 +351,117 @@ export default class GameScene extends Phaser.Scene {
       const volume = Math.max(0, Math.min(1, Number(msg?.v ?? msg?.volume ?? 1)));
       const rate = Math.max(0.01, Number(msg?.r ?? msg?.rate ?? 1));
 
-      // One-shot play locally.
       this.sound.play(key, { volume, rate });
     });
   }
 
-  createPowerUpView(puState) {
-    const type = String(puState?.type || "");
-    if (!type) return null;
+  applyCameraTuning() {
+    const cam = this.cameras.main;
 
-    // If you add more guns later, either add a subclass per gun,
-    // OR just let GunPowerUp handle it via gunCatalog.
-    if (type === "sniper") {
-      return new SniperGunPowerUp({ scene: this, x: Number(puState.x) || 0, y: Number(puState.y) || 0 });
-    }
+    cam.setZoom(CAMERA_ZOOM);
+    cam.setRoundPixels(!!CAMERA_ROUND_PIXELS);
 
-    try {
-      return new GunPowerUp({ scene: this, gunId: type, x: Number(puState.x) || 0, y: Number(puState.y) || 0 });
-    } catch (e) {
-      console.warn("Unknown powerup type:", type, e);
-      return null;
+    // follow offset so player sits at the anchor point
+    const ax = Phaser.Math.Clamp(CAMERA_DEADZONE_ANCHOR_X, 0, 1);
+    const ay = Phaser.Math.Clamp(CAMERA_DEADZONE_ANCHOR_Y, 0, 1);
+
+    const offX = (0.5 - ax) * cam.width;
+    const offY = (0.5 - ay) * cam.height;
+    cam.setFollowOffset(offX, offY);
+
+    // ✅ built-in deadzone (stable)
+    cam.setDeadzone(CAMERA_DEADZONE_W_PX, CAMERA_DEADZONE_H_PX);
+
+    // move deadzone to be centered on the same anchor (screen-space)
+    if (cam.deadzone) {
+      cam.deadzone.x = cam.width * ax - CAMERA_DEADZONE_W_PX / 2;
+      cam.deadzone.y = cam.height * ay - CAMERA_DEADZONE_H_PX / 2;
     }
   }
 
-  // Compact input:
-  //   b = bitmask: 1=tiltLeft, 2=tiltRight, 4=dragActive
-  //   f = fireSeq
-  //   x/y only present when dragActive
-  buildInputPayloadCompact() {
-    const tiltLeft = this.keyTiltLeft?.isDown || false;
-    const tiltRight = this.keyTiltRight?.isDown || false;
+  createPowerUpView(puState) {
+    const type = String(puState?.type || "");
+    if (type === "sniper") return new SniperGunPowerUp({ scene: this, x: puState.x, y: puState.y });
+    if (type) return new GunPowerUp({ scene: this, gunId: type, x: puState.x, y: puState.y });
+    return null;
+  }
 
-    const b = (tiltLeft ? 1 : 0) | (tiltRight ? 2 : 0) | (this.dragActive ? 4 : 0);
-    const msg = { b, f: this.fireSeq | 0 };
+  registerCleanup() {
+    if (this._cleanupRegistered) return;
+    this._cleanupRegistered = true;
 
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.cleanup());
+    this.events.once(Phaser.Scenes.Events.DESTROY, () => this.cleanup());
+  }
+
+  cleanup() {
+    try { this.cameras?.main?.stopFollow(); } catch (_) {}
+
+    for (const p of this.players.values()) {
+      try { p.destroy(); } catch (_) {}
+    }
+    this.players.clear();
+    this.localPlayer = null;
+
+    for (const v of this.powerUps.values()) {
+      try { v.destroy?.(); } catch (_) {}
+    }
+    this.powerUps.clear();
+
+    try { this.room?.leave(); } catch (_) {}
+    this.room = null;
+    this.client = null;
+    this.callbacks = null;
+  }
+
+  sendInput(deltaSec) {
+    if (!this.room) return;
+
+    this.netAcc += deltaSec;
+    const step = 1 / NET_SEND_HZ;
+    if (this.netAcc < step) return;
+    this.netAcc = 0;
+
+    const tiltLeft = !!this.keyTiltLeft?.isDown;
+    const tiltRight = !!this.keyTiltRight?.isDown;
+
+    const firePressed = Phaser.Input.Keyboard.JustDown(this.keyFire);
+    if (firePressed) this.fireSeq = (this.fireSeq + 1) | 0;
+
+    const b =
+      (tiltLeft ? 1 : 0) |
+      (tiltRight ? 2 : 0) |
+      (this.dragActive ? 4 : 0);
+
+    const payload = { b, f: this.fireSeq };
     if (this.dragActive) {
-      // Quantize to ints to reduce payload churn.
-      msg.x = Math.round(this.dragX);
-      msg.y = Math.round(this.dragY);
+      payload.x = this.dragX;
+      payload.y = this.dragY;
     }
 
-    return msg;
+    const last = this.lastSent;
+    const same =
+      last &&
+      last.b === payload.b &&
+      last.f === payload.f &&
+      (last.x ?? null) === (payload.x ?? null) &&
+      (last.y ?? null) === (payload.y ?? null);
+
+    if (!same) {
+      this.room.send("input", payload);
+      this.lastSent = payload;
+    }
   }
 
   update(_time, deltaMs) {
-    const dt = deltaMs / 1000;
+    const dt = Math.min(0.05, (deltaMs || 0) / 1000);
 
-    // Render updates
-    for (const p of this.players.values()) p.update(dt);
-
-    // Fire input
-    if (this.keyFire && Phaser.Input.Keyboard.JustDown(this.keyFire)) {
-      this.fireSeq = (this.fireSeq + 1) | 0;
+    // Update players
+    for (const p of this.players.values()) {
+      p.update(dt);
     }
 
-    if (!this.room) return;
-
-    // Input send loop
-    this.netAcc += dt;
-    const step = 1 / NET_SEND_HZ;
-
-    while (this.netAcc >= step) {
-      this.netAcc -= step;
-
-      const msg = this.buildInputPayloadCompact();
-
-      const same =
-        this.lastSent &&
-        this.lastSent.b === msg.b &&
-        this.lastSent.f === msg.f &&
-        (msg.b & 4
-          ? this.lastSent.x === msg.x && this.lastSent.y === msg.y
-          : true);
-
-      if (!same) {
-        this.room.send("input", msg);
-        this.lastSent = msg;
-      }
-    }
+    // Send inputs
+    this.sendInput(dt);
   }
 }

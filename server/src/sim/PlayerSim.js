@@ -134,6 +134,9 @@ export default class PlayerSim {
       fixedRotation: false,
     });
 
+    // Tag for hitscan damage / identification
+    this.body.setUserData({ kind: "player", sessionId: this.sessionId });
+
     const mainFix = this.body.createFixture(
       pl.Box(this.pxToM(PLAYER_HALF_W_PX), this.pxToM(PLAYER_HALF_H_PX)),
       { density: PLAYER_DENSITY, friction: PLAYER_FRICTION }
@@ -217,6 +220,44 @@ export default class PlayerSim {
       this.world.destroyBody(this.body);
       this.body = null;
     }
+  }
+
+  // --------------------------
+  // Respawn (server authoritative)
+  // - Teleports the body, clears velocity, drops gun, resets tilt state.
+  // - DOES NOT change any movement constants/logic.
+  // --------------------------
+  respawnAt(xPx, yPx) {
+    const x = Number(xPx) || 0;
+    const y = Number(yPx) || 0;
+
+    // cancel drag joint (if any)
+    this.endMouseDrag();
+
+    // reset tilt/balance state so you don't "release-jump" on spawn
+    this.prevTiltDir = 0;
+    this.activePivotSide = 0;
+    this.holdPastMaxActive = false;
+    this.holdPastMaxAngleRad = 0;
+
+    this.groundGraceTimer = 0;
+    this.touchingGround = false;
+
+    // drop weapon on respawn
+    this.dropGun();
+
+    // reset transform + velocity
+    this.body.setLinearVelocity(Vec2(0, 0));
+    this.body.setAngularVelocity(0);
+    this.body.setTransform(Vec2(this.pxToM(x), this.pxToM(y)), 0);
+    this.body.setAwake(true);
+
+    // face right by default (same as your join spawn)
+    this.facingDir = +1;
+    this.prevFacingDir = this.facingDir;
+
+    // rebuild the swing arm to match the new facing + position
+    this.rebuildArmForFacing();
   }
 
   // --------------------------
@@ -532,17 +573,20 @@ export default class PlayerSim {
   }
 
   // ✅ EXACT raycast like old raycastBeamEndPx()
-  raycastBeamEndPx(startPx, dirUnit, maxDistPx) {
+  // (extended to also report which player got hit, without changing the end-point behavior)
+  raycastBeamHitPx(startPx, dirUnit, maxDistPx) {
     const startM = Vec2(this.pxToM(startPx.x), this.pxToM(startPx.y));
     const endPx = { x: startPx.x + dirUnit.x * maxDistPx, y: startPx.y + dirUnit.y * maxDistPx };
     const endM = Vec2(this.pxToM(endPx.x), this.pxToM(endPx.y));
 
     let bestFraction = 1.0;
     let bestPointM = null;
+    let bestHitSessionId = null;
 
     this.world.rayCast(startM, endM, (fixture, point, _normal, fraction) => {
       if (!fixture) return -1;
 
+      // ignore sensors (arms, etc.)
       if (typeof fixture.isSensor === "function" && fixture.isSensor()) return -1;
 
       const body = fixture.getBody();
@@ -551,13 +595,26 @@ export default class PlayerSim {
       if (fraction < bestFraction) {
         bestFraction = fraction;
         bestPointM = point;
+
+        // Track who we hit (if it's a player body)
+        const ud = (typeof body.getUserData === "function") ? body.getUserData() : null;
+        if (ud && typeof ud === "object" && ud.kind === "player" && typeof ud.sessionId === "string") {
+          bestHitSessionId = ud.sessionId;
+        } else {
+          bestHitSessionId = null;
+        }
       }
 
       return fraction;
     });
 
-    if (bestPointM) return { x: this.mToPx(bestPointM.x), y: this.mToPx(bestPointM.y) };
-    return endPx;
+    const hitEndPx = bestPointM ? { x: this.mToPx(bestPointM.x), y: this.mToPx(bestPointM.y) } : endPx;
+    return { endPx: hitEndPx, hitSessionId: bestHitSessionId };
+  }
+
+  // Backwards compatible: return only the end point (exact same behavior as before)
+  raycastBeamEndPx(startPx, dirUnit, maxDistPx) {
+    return this.raycastBeamHitPx(startPx, dirUnit, maxDistPx).endPx;
   }
 
   // Called by LobbyRoom each tick BEFORE world.step
@@ -602,7 +659,8 @@ export default class PlayerSim {
 
         if (muzzle && dir) {
           const maxDistPx = Math.max(10, Number(def.bulletMaxDistancePx ?? 2200));
-          const endPx = this.raycastBeamEndPx(muzzle, dir, maxDistPx);
+          const hit = this.raycastBeamHitPx(muzzle, dir, maxDistPx);
+          const endPx = hit.endPx;
 
           events.push({
             kind: "shot",
@@ -615,6 +673,18 @@ export default class PlayerSim {
             tailLenPx: Number(def.bulletTailLengthPx ?? 200),
             color: Number(def.bulletColor ?? 0xffffff),
           });
+
+          // apply damage (server authoritative)
+          const dmg = Number(def.damage ?? 0);
+          if (dmg > 0 && hit.hitSessionId && hit.hitSessionId !== this.sessionId) {
+            events.push({
+              kind: "damage",
+              to: hit.hitSessionId,
+              amount: dmg,
+              from: this.sessionId,
+              gunId: this.gunId,
+            });
+          }
 
           // fire sound
           if (def.fireSoundKey) {

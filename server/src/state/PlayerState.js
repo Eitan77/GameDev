@@ -16,6 +16,10 @@ export default class PlayerState extends Schema {
     this.gunId = "";
     this.ammo = 0;
 
+    // health (server authoritative)
+    this.maxHealth = 100;
+    this.health = 100;
+
     // optional debug
     this.gunX = 0;
     this.gunY = 0;
@@ -36,6 +40,9 @@ defineTypes(PlayerState, {
 
   gunId: "string",
   ammo: "uint8",
+
+  maxHealth: "uint16",
+  health: "uint16",
 
   gunX: "int32",
   gunY: "int32",

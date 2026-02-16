@@ -1,12 +1,9 @@
 // ============================================================
 // src/player.js
-//
 // CLIENT: Render-only player (server authoritative physics).
-// ✅ Guns restored EXACTLY like your old code:
-// - applyFacingToSprites()
-// - updateGunSpriteTransform()
-// - origin mirroring when flipped
-// - (optional) muzzle math helpers kept for correctness
+//
+// Change requested:
+// ✅ No interpolation: snap to latest server snapshot.
 // ============================================================
 
 import Phaser from "phaser";
@@ -21,20 +18,35 @@ const ARM_W_PX = 30;
 const ARM_H_PX = 70;
 
 const PLAYER_DEPTH = 5;
-const ARM_DEPTH = 6;
-const GUN_DEPTH = 7;
+const ARM_DEPTH = 7;
+const GUN_DEPTH = 5.8;
 
 const GUN_ALONG_ARM_OFFSET_PX = 0;
 const GUN_SIDE_OFFSET_PX = 0;
 
-function clamp(x, a, b) {
-  return Math.max(a, Math.min(b, x));
-}
+// ------------------------------------------------------------
+// Health bar (customizable)
+// ------------------------------------------------------------
+const HEALTH_BAR_W_PX = 70;
+const HEALTH_BAR_H_PX = 10;
 
-function lerpAngleRad(a, b, t) {
-  // shortest angle interpolation
-  const delta = Phaser.Math.Angle.Wrap(b - a);
-  return a + delta * t;
+// how far ABOVE the player's head (in pixels)
+const HEALTH_BAR_OFFSET_FROM_HEAD_PX = 18;
+
+// colors
+const HEALTH_BAR_BORDER_COLOR = 0x000000;
+const HEALTH_BAR_BORDER_ALPHA = 0.9;
+
+const HEALTH_BAR_BG_COLOR = 0x202020;
+const HEALTH_BAR_BG_ALPHA = 0.85;
+
+const HEALTH_BAR_FILL_COLOR = 0x00ff00;
+const HEALTH_BAR_FILL_ALPHA = 0.95;
+
+function clamp01(x) {
+  if (x <= 0) return 0;
+  if (x >= 1) return 1;
+  return x;
 }
 
 export default class Player {
@@ -64,22 +76,44 @@ export default class Player {
     this.equippedGun = null;
     this.gunSprite = null;
 
-    // last known gunId (to detect changes)
     this._gunId = "";
     this._ammo = 0;
+
+    // health
+    this.maxHealth = 100;
+    this.health = 100;
+
+    // health bar (simple rectangles inside a container)
+    const plate = this.scene.add
+      .rectangle(0, 0, HEALTH_BAR_W_PX + 2, HEALTH_BAR_H_PX + 2, HEALTH_BAR_BORDER_COLOR, HEALTH_BAR_BORDER_ALPHA)
+      .setOrigin(0.5, 0.5);
+
+    const bg = this.scene.add
+      .rectangle(0, 0, HEALTH_BAR_W_PX, HEALTH_BAR_H_PX, HEALTH_BAR_BG_COLOR, HEALTH_BAR_BG_ALPHA)
+      .setOrigin(0.5, 0.5);
+
+    // fill is left-anchored so width changes grow/shrink from the left
+    this.healthFill = this.scene.add
+      .rectangle(-HEALTH_BAR_W_PX / 2, 0, HEALTH_BAR_W_PX, HEALTH_BAR_H_PX, HEALTH_BAR_FILL_COLOR, HEALTH_BAR_FILL_ALPHA)
+      .setOrigin(0, 0.5);
+
+    this.healthBar = this.scene.add.container(0, 0, [plate, bg, this.healthFill]);
+    this.healthBar.setDepth(50);
   }
 
   destroy() {
     if (this.gunSprite) this.gunSprite.destroy();
+    if (this.healthBar) this.healthBar.destroy(true);
     if (this.arm) this.arm.destroy();
     if (this.sprite) this.sprite.destroy();
 
     this.gunSprite = null;
+    this.healthBar = null;
+    this.healthFill = null;
     this.arm = null;
     this.sprite = null;
   }
 
-  // Called from GameScene on state changes
   setTargetFromState(s) {
     const x = Number(s.x) || 0;
     const y = Number(s.y) || 0;
@@ -94,17 +128,18 @@ export default class Player {
     const gunId = (typeof s.gunId === "string") ? s.gunId : "";
     const ammo = Number(s.ammo) || 0;
 
-    this.target = { x, y, a, armX, armY, armA, dir, gunId, ammo };
+    const maxHealth = Number(s.maxHealth) || this.maxHealth || 100;
+    const health = Number(s.health);
+    const safeHealth = Number.isFinite(health) ? health : this.health;
 
-    // facing update (rebuild not needed client-side; just flip)
+    this.target = { x, y, a, armX, armY, armA, dir, gunId, ammo, maxHealth, health: safeHealth };
+
+    this.maxHealth = maxHealth;
+    this.health = safeHealth;
+
+    // facing update
     this.facingDir = dir;
-    if (this.facingDir !== this.prevFacingDir) {
-      this.prevFacingDir = this.facingDir;
-      this.applyFacingToSprites();
-    } else {
-      // still ensure flip correct if gun changed
-      this.applyFacingToSprites();
-    }
+    this.applyFacingToSprites();
 
     // gun change detection
     if (gunId !== this._gunId) {
@@ -117,7 +152,6 @@ export default class Player {
   }
 
   setGunById(gunId) {
-    // destroy old
     if (this.gunSprite) {
       this.gunSprite.destroy();
       this.gunSprite = null;
@@ -140,7 +174,6 @@ export default class Player {
     this.updateGunSpriteTransform();
   }
 
-  // ✅ EXACTLY like your old code
   applyFacingToSprites() {
     const flip = PLAYER_ART_FACES_RIGHT ? this.facingDir === -1 : this.facingDir === +1;
 
@@ -160,7 +193,6 @@ export default class Player {
     }
   }
 
-  // ✅ EXACTLY like your old code
   updateGunSpriteTransform() {
     if (!this.gunSprite || !this.equippedGun) return;
     if (!this.arm) return;
@@ -187,33 +219,42 @@ export default class Player {
     const sideBase = this.equippedGun.heldSideOffsetPx ?? GUN_SIDE_OFFSET_PX;
     const side = sideBase * mirrorDir;
 
-    // Position gun near the hand
     this.gunSprite.x = handX + downX * along + rightX * side;
     this.gunSprite.y = handY + downY * along + rightY * side;
 
-    // Rotation (mirror angle offset too)
     const angOff = this.equippedGun.heldAngleOffsetRad ?? 0;
     this.gunSprite.rotation = a + angOff * mirrorDir;
   }
 
-  update(deltaSec) {
+  update(_deltaSec) {
     if (!this.target) return;
 
-    // Simple smoothing for remote players
-    const t = this.isLocal ? 1.0 : clamp(deltaSec * 18, 0, 1);
+    // ✅ SNAP: no lerp
+    this.sprite.x = this.target.x;
+    this.sprite.y = this.target.y;
+    this.sprite.rotation = this.target.a;
 
-    // body
-    this.sprite.x = Phaser.Math.Linear(this.sprite.x, this.target.x, t);
-    this.sprite.y = Phaser.Math.Linear(this.sprite.y, this.target.y, t);
-    this.sprite.rotation = lerpAngleRad(this.sprite.rotation, this.target.a, t);
+    this.arm.x = this.target.armX;
+    this.arm.y = this.target.armY;
+    this.arm.rotation = this.target.armA;
 
-    // arm (top anchored)
-    this.arm.x = Phaser.Math.Linear(this.arm.x, this.target.armX, t);
-    this.arm.y = Phaser.Math.Linear(this.arm.y, this.target.armY, t);
-    this.arm.rotation = lerpAngleRad(this.arm.rotation, this.target.armA, t);
-
-    // gun follows arm (old behavior)
+    this.facingDir = this.target.dir;
     this.applyFacingToSprites();
     this.updateGunSpriteTransform();
+
+    // health bar above head
+    if (this.healthBar && this.healthFill) {
+      const topY = this.sprite.y - PLAYER_H_PX / 2;
+      this.healthBar.x = this.sprite.x;
+      this.healthBar.y = topY - HEALTH_BAR_OFFSET_FROM_HEAD_PX;
+
+      const mh = Math.max(1, Number(this.maxHealth) || 100);
+      const hp = Math.max(0, Math.min(mh, Number(this.health) || 0));
+      const ratio = clamp01(hp / mh);
+
+      this.healthFill.width = HEALTH_BAR_W_PX * ratio;
+      // keep left anchored at -W/2
+      this.healthFill.x = -HEALTH_BAR_W_PX / 2;
+    }
   }
 }
