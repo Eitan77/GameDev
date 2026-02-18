@@ -74,8 +74,14 @@ export default class MainMenuScene extends Phaser.Scene {
   }
 
   layout() {
-    const cx = this.cameras.main.centerX;
-    const cy = this.cameras.main.centerY;
+    // Cameras can be unavailable during an early resize in some builds.
+    // Use camera center when present, otherwise fall back to ScaleManager.
+    const cam = this.cameras && this.cameras.main ? this.cameras.main : null;
+    const w = this.scale ? this.scale.width : 0;
+    const h = this.scale ? this.scale.height : 0;
+
+    const cx = cam ? cam.centerX : w * 0.5;
+    const cy = cam ? cam.centerY : h * 0.5;
 
     this._titleText?.setPosition(cx, cy - 140);
     this._buttonContainer?.setPosition(cx, cy);

@@ -30,6 +30,9 @@ export const GUN_CATALOG = {
     // ammo
     ammo: 5,
 
+    // ✅ auto-aim (server uses this; client keeps it for "must match server")
+    aimRadiusPx: 900,
+
     // damage per hit (server authoritative)
     damage: 50,
 

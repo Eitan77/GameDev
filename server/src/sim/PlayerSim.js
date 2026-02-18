@@ -66,6 +66,15 @@ const ARM_ANGULAR_DAMPING = 3.0;
 const ARM_SHOULDER_LOCAL_X_PX = -8;
 const ARM_SHOULDER_LOCAL_Y_PX = -25;
 
+// --------------------
+// Auto-aim tuning
+// --------------------
+const AUTO_AIM_SPEED_DEG_PER_SEC = 540; // degrees/sec (global)
+const AUTO_AIM_SPEED_RAD_PER_SEC = (AUTO_AIM_SPEED_DEG_PER_SEC * Math.PI) / 180;
+
+// aim a bit above feet (positive Y is DOWN in this project)
+const AUTO_AIM_TARGET_Y_OFFSET_PX = -35;
+
 const TILT_MAX_ANGLE_RAD = (TILT_MAX_ANGLE_DEG * Math.PI) / 180;
 const MAX_JUMP_ANGLE_RAD = (MAX_JUMP_ANGLE_DEG * Math.PI) / 180;
 const TILT_ROTATE_SPEED_RAD_PER_SEC = (TILT_ROTATE_SPEED_DEG_PER_SEC * Math.PI) / 180;
@@ -218,6 +227,68 @@ export default class PlayerSim {
     this.createSwingArm();
   }
 
+  // Re-anchor the arm when facing changes, WITHOUT resetting its world angle.
+  // This fixes arm flip while keeping aim stable.
+  rebuildArmForFacingPreserveAngle() {
+    if (!this.armBody) {
+      this.rebuildArmForFacing();
+      return;
+    }
+
+    const keepAngle = this.armBody.getAngle();
+    const keepAngVel = this.armBody.getAngularVelocity();
+    const lv = this.armBody.getLinearVelocity();
+    const keepLinVel = Vec2(lv.x, lv.y);
+
+    this.destroySwingArm();
+
+    const shoulderLocalXpx = ARM_SHOULDER_LOCAL_X_PX * this.facingDir;
+    const shoulderLocalYpx = ARM_SHOULDER_LOCAL_Y_PX;
+
+    const shoulderLocal = Vec2(this.pxToM(shoulderLocalXpx), this.pxToM(shoulderLocalYpx));
+    const shoulderWorld = this.body.getWorldPoint(shoulderLocal);
+
+    const armHalfWm = this.pxToM(ARM_W_PX / 2);
+    const armHalfHm = this.pxToM(ARM_H_PX / 2);
+
+    this.armTopLocalM = Vec2(0, -armHalfHm);
+
+    const topOffsetRot = rotateXY(0, -armHalfHm, keepAngle);
+    const armCenter = Vec2(shoulderWorld.x - topOffsetRot.x, shoulderWorld.y - topOffsetRot.y);
+
+    this.armBody = this.world.createBody({
+      type: "dynamic",
+      position: armCenter,
+      angle: keepAngle,
+      fixedRotation: false,
+    });
+
+    const armFix = this.armBody.createFixture(pl.Box(armHalfWm, armHalfHm), {
+      density: ARM_DENSITY,
+      friction: 0,
+    });
+
+    armFix.setUserData("arm");
+    armFix.setSensor(true);
+    armFix.setFilterData({ categoryBits: 0x0004, maskBits: 0x0000 });
+
+    this.armBody.setLinearDamping(ARM_LINEAR_DAMPING);
+    this.armBody.setAngularDamping(ARM_ANGULAR_DAMPING);
+
+    this.armJoint = this.world.createJoint(
+      pl.RevoluteJoint(
+        { collideConnected: false, enableLimit: false, enableMotor: false },
+        this.body,
+        this.armBody,
+        shoulderWorld
+      )
+    );
+
+    this.armBody.setAwake(true);
+    this.armBody.setLinearVelocity(keepLinVel);
+    this.armBody.setAngularVelocity(keepAngVel);
+  }
+
   destroy() {
     this.endMouseDrag();
     this.destroySwingArm();
@@ -325,6 +396,105 @@ export default class PlayerSim {
   }
 
   // --------------------------
+  // Auto-aim helpers
+  // --------------------------
+  getArmPivotWorldM() {
+    if (this.armJoint && typeof this.armJoint.getAnchorA === "function") {
+      const a = this.armJoint.getAnchorA();
+      if (a && Number.isFinite(a.x) && Number.isFinite(a.y)) return a;
+    }
+    if (this.armBody && this.armTopLocalM) {
+      const p = this.armBody.getWorldPoint(this.armTopLocalM);
+      if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) return p;
+    }
+    return null;
+  }
+
+  findAutoAimTargetFromPivot(pivotPx, radiusPx) {
+    const r = Math.max(0, Number(radiusPx) || 0);
+    if (r <= 0) return null;
+    const r2 = r * r;
+
+    let best = null;
+    let bestD2 = Infinity;
+
+    for (let b = this.world.getBodyList(); b; b = b.getNext()) {
+      const ud = (typeof b.getUserData === "function") ? b.getUserData() : null;
+      if (!ud || typeof ud !== "object" || ud.kind !== "player") continue;
+
+      const sid = String(ud.sessionId || "");
+      if (!sid || sid === this.sessionId) continue;
+
+      const p = b.getPosition();
+      const tx = this.mToPx(p.x);
+      const ty = this.mToPx(p.y) + AUTO_AIM_TARGET_Y_OFFSET_PX;
+
+      const dx = tx - pivotPx.x;
+      const dy = ty - pivotPx.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 > r2) continue;
+
+      const dist = Math.sqrt(d2) || 0;
+      if (dist > 0.001) {
+        const dir = { x: dx / dist, y: dy / dist };
+        const hit = this.raycastBeamHitPx(pivotPx, dir, dist);
+        if (hit?.hitSessionId !== sid) continue;
+      }
+
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        best = { sessionId: sid, x: tx, y: ty };
+      }
+    }
+
+    return best;
+  }
+
+  updateAutoAim(fixedDt) {
+    if (!this.hasGun()) return;
+    if (!this.armBody || !this.armTopLocalM) return;
+
+    const def = this.gunCatalog?.[this.gunId];
+    if (!def) return;
+
+    const radiusPx = Number(def.aimRadiusPx ?? 0);
+    if (!(radiusPx > 0)) return;
+
+    const pivotM = this.getArmPivotWorldM();
+    if (!pivotM) return;
+
+    const pivotPx = { x: this.mToPx(pivotM.x), y: this.mToPx(pivotM.y) };
+    const target = this.findAutoAimTargetFromPivot(pivotPx, radiusPx);
+    if (!target) return;
+
+    const dx = target.x - pivotPx.x;
+    const dy = target.y - pivotPx.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 0.001) return;
+
+    const desiredDown = Math.atan2(dy, dx);
+    const desiredArmA = wrapRadPi(desiredDown - Math.PI / 2);
+
+    const curA = wrapRadPi(this.armBody.getAngle());
+    const err = wrapRadPi(desiredArmA - curA);
+
+    const maxStep = AUTO_AIM_SPEED_RAD_PER_SEC * Math.max(0, Number(fixedDt) || 0);
+    const step = clamp(err, -maxStep, +maxStep);
+    const nextA = wrapRadPi(curA + step);
+
+    const topLocal = this.armTopLocalM;
+    const rTop = rotateXY(topLocal.x, topLocal.y, nextA);
+    const nextCenter = Vec2(pivotM.x - rTop.x, pivotM.y - rTop.y);
+
+    this.armBody.setAwake(true);
+    this.armBody.setTransform(nextCenter, nextA);
+    this.armBody.setAngularVelocity(0);
+
+    const bv = this.body.getLinearVelocity();
+    this.armBody.setLinearVelocity(Vec2(bv.x, bv.y));
+  }
+
+  // --------------------------
   // Ground rays
   // --------------------------
   computeGroundedByRays() {
@@ -376,9 +546,6 @@ export default class PlayerSim {
     return { leftHit: castOne(leftX), rightHit: castOne(rightX) };
   }
 
-  // --------------------------
-  // Tilt / balance
-  // --------------------------
   computePDTorqueWrapped(targetAngleRad, kp, kd, maxTorque) {
     const angle = wrapRadPi(this.body.getAngle());
     const angVel = this.body.getAngularVelocity();
@@ -436,18 +603,11 @@ export default class PlayerSim {
     this.body.setLinearVelocity(Vec2(v.x, 0));
   }
 
-  // ------------------------------------------------------------
-  // Tilt release "jump"
-  // ------------------------------------------------------------
   doTiltReleaseJump() {
     const angleNow = wrapRadPi(this.body.getAngle());
-
-    if (Math.abs(angleNow) > MAX_JUMP_ANGLE_RAD) {
-      return false;
-    }
+    if (Math.abs(angleNow) > MAX_JUMP_ANGLE_RAD) return false;
 
     const angForJump = clamp(angleNow, -Math.PI / 2, +Math.PI / 2);
-
     const jumpSpeedMps = this.pxToM(JUMP_SPEED_PX_PER_SEC);
 
     const vx = Math.sin(angForJump) * jumpSpeedMps;
@@ -463,7 +623,7 @@ export default class PlayerSim {
   }
 
   // --------------------------
-  // Guns
+  // Guns (unchanged)
   // --------------------------
   hasGun() { return !!this.gunId; }
 
@@ -477,9 +637,6 @@ export default class PlayerSim {
 
   dropGun() { this.gunId = ""; this.ammo = 0; }
 
-  // --------------------------
-  // Arm pose (top point)
-  // --------------------------
   getArmPosePx() {
     if (!this.armBody || !this.armTopLocalM) return null;
     const topWorld = this.armBody.getWorldPoint(this.armTopLocalM);
@@ -490,9 +647,6 @@ export default class PlayerSim {
     };
   }
 
-  // --------------------------
-  // ✅ EXACT gun pose math like old client updateGunSpriteTransform()
-  // --------------------------
   computeGunPosePx() {
     if (!this.gunId) return null;
     const def = this.gunCatalog?.[this.gunId];
@@ -628,10 +782,9 @@ export default class PlayerSim {
 
   // Called by LobbyRoom each tick BEFORE world.step
   applyInput(input, fixedDt) {
-    // facing from input (visual only)
-    // We still update facingDir so the CLIENT flips the player model,
-    // but we DO NOT rebuild/re-anchor the arm physics when facing changes.
-    // This keeps the arm's world pose stable when you switch directions.
+    // facing from input
+    // When facing changes, we re-anchor the arm to the correct shoulder.
+    // ✅ Important: we preserve the arm's world angle so aim does NOT reset on flip.
     if (input) {
       const leftDown = !!input.tiltLeft;
       const rightDown = !!input.tiltRight;
@@ -639,9 +792,9 @@ export default class PlayerSim {
       if (leftDown && !rightDown) this.facingDir = -1;
       else if (rightDown && !leftDown) this.facingDir = +1;
 
-      // Track changes (useful for debugging / future logic), but do not rebuild the arm.
       if (this.facingDir !== this.prevFacingDir) {
         this.prevFacingDir = this.facingDir;
+        this.rebuildArmForFacingPreserveAngle();
       }
     }
 
@@ -653,6 +806,9 @@ export default class PlayerSim {
 
     // dragging disables tilt/balance
     this.updateMouseDrag(input);
+
+    // ✅ Auto-aim runs only while holding a gun (and only if that gun has aimRadiusPx > 0)
+    this.updateAutoAim(fixedDt);
 
     const events = [];
 
