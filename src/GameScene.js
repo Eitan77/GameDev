@@ -12,6 +12,9 @@
 // Also includes:
 // ✅ Duplicate-guard: if onAdd fires twice for same sessionId, destroy old sprites first
 // ✅ Cleanup on scene shutdown so listeners/rooms don’t stack
+//
+// Death / ragdoll support:
+// ✅ If local player is dead, block drag + tilt + fire input
 // ============================================================
 
 import Phaser from "phaser";
@@ -35,21 +38,15 @@ export const NET_SEND_HZ = 60;
 // ------------------------------------------------------------
 const CAMERA_ZOOM = 0.7;
 
-// Keep same feel as before (1 = instant, no extra smoothing)
 const CAMERA_FOLLOW_LERP_X = 1;
 const CAMERA_FOLLOW_LERP_Y = 1;
 
-// Deadzone rectangle size IN SCREEN PIXELS.
 const CAMERA_DEADZONE_W_PX = 420;
 const CAMERA_DEADZONE_H_PX = 260;
 
-// Where in the screen the follow target "rests"
 const CAMERA_DEADZONE_ANCHOR_X = 0.5;
 const CAMERA_DEADZONE_ANCHOR_Y = 0.55;
 
-// IMPORTANT: with zoom != 1, rounding pixels can cause “double/ghost” look on scroll.
-// This is the #1 common cause of ghosting when the camera moves.
-// Set false for smooth scrolling.
 const CAMERA_ROUND_PIXELS = false;
 
 const MOUSE_GRAB_RADIUS_PX = 140;
@@ -210,6 +207,9 @@ export default class GameScene extends Phaser.Scene {
     this.input.on("pointerdown", (pointer) => {
       if (!this.localPlayer?.sprite) return;
 
+      // ✅ If dead/ragdolling, no dragging
+      if (this.localPlayer?.isDead) return;
+
       const wp = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
       const wx = wp.x;
       const wy = wp.y;
@@ -229,6 +229,13 @@ export default class GameScene extends Phaser.Scene {
 
     this.input.on("pointermove", (pointer) => {
       if (!this.dragActive) return;
+
+      // ✅ If we died mid-drag, stop dragging immediately
+      if (this.localPlayer?.isDead) {
+        this.dragActive = false;
+        return;
+      }
+
       const wp = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
       this.dragX = wp.x;
       this.dragY = wp.y;
@@ -292,7 +299,17 @@ export default class GameScene extends Phaser.Scene {
         };
       } else {
         const refresh = () => p.setTargetFromState(playerState);
-        ["x","y","a","armX","armY","armA","dir","gunId","ammo","maxHealth","health","gunX","gunY","gunA"].forEach((k) => {
+
+        // ✅ include "dead" in the listened fields
+        [
+          "x","y","a",
+          "armX","armY","armA",
+          "dir",
+          "gunId","ammo",
+          "maxHealth","health",
+          "dead",
+          "gunX","gunY","gunA"
+        ].forEach((k) => {
           this.callbacks.listen(playerState, k, refresh);
         });
       }
@@ -361,7 +378,6 @@ export default class GameScene extends Phaser.Scene {
     cam.setZoom(CAMERA_ZOOM);
     cam.setRoundPixels(!!CAMERA_ROUND_PIXELS);
 
-    // follow offset so player sits at the anchor point
     const ax = Phaser.Math.Clamp(CAMERA_DEADZONE_ANCHOR_X, 0, 1);
     const ay = Phaser.Math.Clamp(CAMERA_DEADZONE_ANCHOR_Y, 0, 1);
 
@@ -369,10 +385,8 @@ export default class GameScene extends Phaser.Scene {
     const offY = (0.5 - ay) * cam.height;
     cam.setFollowOffset(offX, offY);
 
-    // ✅ built-in deadzone (stable)
     cam.setDeadzone(CAMERA_DEADZONE_W_PX, CAMERA_DEADZONE_H_PX);
 
-    // move deadzone to be centered on the same anchor (screen-space)
     if (cam.deadzone) {
       cam.deadzone.x = cam.width * ax - CAMERA_DEADZONE_W_PX / 2;
       cam.deadzone.y = cam.height * ay - CAMERA_DEADZONE_H_PX / 2;
@@ -422,10 +436,16 @@ export default class GameScene extends Phaser.Scene {
     if (this.netAcc < step) return;
     this.netAcc = 0;
 
-    const tiltLeft = !!this.keyTiltLeft?.isDown;
-    const tiltRight = !!this.keyTiltRight?.isDown;
+    // ✅ dead players can't control anything
+    const localDead = !!this.localPlayer?.isDead;
 
-    const firePressed = Phaser.Input.Keyboard.JustDown(this.keyFire);
+    // if dead, cancel dragging
+    if (localDead) this.dragActive = false;
+
+    const tiltLeft = localDead ? false : !!this.keyTiltLeft?.isDown;
+    const tiltRight = localDead ? false : !!this.keyTiltRight?.isDown;
+
+    const firePressed = localDead ? false : Phaser.Input.Keyboard.JustDown(this.keyFire);
     if (firePressed) this.fireSeq = (this.fireSeq + 1) | 0;
 
     const b =
@@ -456,12 +476,10 @@ export default class GameScene extends Phaser.Scene {
   update(_time, deltaMs) {
     const dt = Math.min(0.05, (deltaMs || 0) / 1000);
 
-    // Update players
     for (const p of this.players.values()) {
       p.update(dt);
     }
 
-    // Send inputs
     this.sendInput(dt);
   }
 }

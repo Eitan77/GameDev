@@ -2,8 +2,9 @@
 // src/player.js
 // CLIENT: Render-only player (server authoritative physics).
 //
-// Change requested:
 // ✅ No interpolation: snap to latest server snapshot.
+// ✅ Adds death visuals:
+//    - When dead: tint + fade, hide health bar
 // ============================================================
 
 import Phaser from "phaser";
@@ -30,10 +31,8 @@ const GUN_SIDE_OFFSET_PX = 0;
 const HEALTH_BAR_W_PX = 70;
 const HEALTH_BAR_H_PX = 10;
 
-// how far ABOVE the player's head (in pixels)
 const HEALTH_BAR_OFFSET_FROM_HEAD_PX = 18;
 
-// colors
 const HEALTH_BAR_BORDER_COLOR = 0x000000;
 const HEALTH_BAR_BORDER_ALPHA = 0.9;
 
@@ -42,6 +41,12 @@ const HEALTH_BAR_BG_ALPHA = 0.85;
 
 const HEALTH_BAR_FILL_COLOR = 0x00ff00;
 const HEALTH_BAR_FILL_ALPHA = 0.95;
+
+// ------------------------------------------------------------
+// Dead visuals
+// ------------------------------------------------------------
+const DEAD_TINT = 0x777777;
+const DEAD_ALPHA = 0.85;
 
 function clamp01(x) {
   if (x <= 0) return 0;
@@ -55,35 +60,50 @@ export default class Player {
     this.sessionId = opts.sessionId;
     this.isLocal = !!opts.isLocal;
 
+    // facing
     this.facingDir = +1;
     this.prevFacingDir = this.facingDir;
 
+    // latest server state
     this.target = null;
 
+    // death flag (client-side view)
+    this.isDead = false;
+
+    // ------------------------
     // main sprite
+    // ------------------------
     this.sprite = this.scene.add.image(0, 0, "player");
     this.sprite.setDisplaySize(PLAYER_W_PX, PLAYER_H_PX);
     this.sprite.setOrigin(0.5, 0.5);
     this.sprite.setDepth(PLAYER_DEPTH);
 
+    // ------------------------
     // arm sprite (top anchored)
+    // ------------------------
     this.arm = this.scene.add.image(0, 0, "arm");
     this.arm.setDisplaySize(ARM_W_PX, ARM_H_PX);
     this.arm.setOrigin(0.5, 0.0);
     this.arm.setDepth(ARM_DEPTH);
 
+    // ------------------------
     // gun
+    // ------------------------
     this.equippedGun = null;
     this.gunSprite = null;
 
     this._gunId = "";
     this._ammo = 0;
 
+    // ------------------------
     // health
+    // ------------------------
     this.maxHealth = 100;
     this.health = 100;
 
-    // health bar (simple rectangles inside a container)
+    // ------------------------
+    // health bar graphics
+    // ------------------------
     const plate = this.scene.add
       .rectangle(0, 0, HEALTH_BAR_W_PX + 2, HEALTH_BAR_H_PX + 2, HEALTH_BAR_BORDER_COLOR, HEALTH_BAR_BORDER_ALPHA)
       .setOrigin(0.5, 0.5);
@@ -92,13 +112,15 @@ export default class Player {
       .rectangle(0, 0, HEALTH_BAR_W_PX, HEALTH_BAR_H_PX, HEALTH_BAR_BG_COLOR, HEALTH_BAR_BG_ALPHA)
       .setOrigin(0.5, 0.5);
 
-    // fill is left-anchored so width changes grow/shrink from the left
     this.healthFill = this.scene.add
       .rectangle(-HEALTH_BAR_W_PX / 2, 0, HEALTH_BAR_W_PX, HEALTH_BAR_H_PX, HEALTH_BAR_FILL_COLOR, HEALTH_BAR_FILL_ALPHA)
       .setOrigin(0, 0.5);
 
     this.healthBar = this.scene.add.container(0, 0, [plate, bg, this.healthFill]);
     this.healthBar.setDepth(50);
+
+    // apply initial visuals
+    this.applyDeadVisuals();
   }
 
   destroy() {
@@ -114,6 +136,44 @@ export default class Player {
     this.sprite = null;
   }
 
+  // ------------------------------------------------------------
+  // Dead visuals (tint, alpha, hide health bar)
+  // ------------------------------------------------------------
+  applyDeadVisuals() {
+    if (!this.sprite || !this.arm) return;
+
+    if (this.isDead) {
+      this.sprite.setTint(DEAD_TINT);
+      this.arm.setTint(DEAD_TINT);
+
+      this.sprite.setAlpha(DEAD_ALPHA);
+      this.arm.setAlpha(DEAD_ALPHA);
+
+      if (this.gunSprite) {
+        this.gunSprite.setTint(DEAD_TINT);
+        this.gunSprite.setAlpha(DEAD_ALPHA);
+      }
+
+      if (this.healthBar) this.healthBar.setVisible(false);
+    } else {
+      this.sprite.clearTint();
+      this.arm.clearTint();
+
+      this.sprite.setAlpha(1);
+      this.arm.setAlpha(1);
+
+      if (this.gunSprite) {
+        this.gunSprite.clearTint();
+        this.gunSprite.setAlpha(1);
+      }
+
+      if (this.healthBar) this.healthBar.setVisible(true);
+    }
+  }
+
+  // ------------------------------------------------------------
+  // Read server schema state into local target
+  // ------------------------------------------------------------
   setTargetFromState(s) {
     const x = Number(s.x) || 0;
     const y = Number(s.y) || 0;
@@ -132,10 +192,26 @@ export default class Player {
     const health = Number(s.health);
     const safeHealth = Number.isFinite(health) ? health : this.health;
 
-    this.target = { x, y, a, armX, armY, armA, dir, gunId, ammo, maxHealth, health: safeHealth };
+    // ✅ dead flag from server (fallback: health <= 0)
+    const dead = (typeof s.dead === "boolean") ? s.dead : (safeHealth <= 0);
 
+    // store target snapshot
+    this.target = {
+      x, y, a,
+      armX, armY, armA,
+      dir,
+      gunId, ammo,
+      maxHealth,
+      health: safeHealth,
+      dead,
+    };
+
+    // update health
     this.maxHealth = maxHealth;
     this.health = safeHealth;
+
+    // update death
+    this.isDead = dead;
 
     // facing update
     this.facingDir = dir;
@@ -149,8 +225,14 @@ export default class Player {
     } else {
       this._ammo = ammo;
     }
+
+    // update visuals (dead/alive)
+    this.applyDeadVisuals();
   }
 
+  // ------------------------------------------------------------
+  // Gun
+  // ------------------------------------------------------------
   setGunById(gunId) {
     if (this.gunSprite) {
       this.gunSprite.destroy();
@@ -172,6 +254,9 @@ export default class Player {
 
     this.applyFacingToSprites();
     this.updateGunSpriteTransform();
+
+    // if we are dead, ensure gun is tinted too
+    this.applyDeadVisuals();
   }
 
   applyFacingToSprites() {
@@ -226,6 +311,9 @@ export default class Player {
     this.gunSprite.rotation = a + angOff * mirrorDir;
   }
 
+  // ------------------------------------------------------------
+  // Render update (snap to server)
+  // ------------------------------------------------------------
   update(_deltaSec) {
     if (!this.target) return;
 
@@ -242,8 +330,12 @@ export default class Player {
     this.applyFacingToSprites();
     this.updateGunSpriteTransform();
 
-    // health bar above head
-    if (this.healthBar && this.healthFill) {
+    // sync dead flag continuously
+    this.isDead = !!this.target.dead || (Number(this.target.health) <= 0);
+    this.applyDeadVisuals();
+
+    // health bar above head (only when alive)
+    if (this.healthBar && this.healthFill && !this.isDead) {
       const topY = this.sprite.y - PLAYER_H_PX / 2;
       this.healthBar.x = this.sprite.x;
       this.healthBar.y = topY - HEALTH_BAR_OFFSET_FROM_HEAD_PX;
@@ -253,7 +345,6 @@ export default class Player {
       const ratio = clamp01(hp / mh);
 
       this.healthFill.width = HEALTH_BAR_W_PX * ratio;
-      // keep left anchored at -W/2
       this.healthFill.x = -HEALTH_BAR_W_PX / 2;
     }
   }

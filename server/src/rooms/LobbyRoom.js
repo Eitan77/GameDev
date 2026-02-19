@@ -2,12 +2,8 @@
 // server/src/rooms/LobbyRoom.js
 // Server-authoritative physics + collisions + guns.
 //
-// Change requested:
-// ✅ Patch state at 60Hz (60 snapshots/sec) so client can snap without interpolation.
-//
-// Notes:
-// - Physics still runs at 60Hz.
-// - Patch rate at 60Hz increases bandwidth (more frequent state updates).
+// ✅ Adds: death ragdoll + delayed respawn
+// - When health <= 0: mark dead, ragdoll (no control), wait, then respawn.
 // ============================================================
 
 import { Room } from "colyseus";
@@ -26,7 +22,7 @@ import { loadTiledMapToPlanck, getObjectPoints } from "../sim/loadTiledMap.js";
 // TUNE THESE
 // --------------------
 const SERVER_TICK_HZ = 60;       // physics tick rate (true sim rate)
-const SERVER_PATCH_HZ = 60;      // ✅ 60 snapshots/sec
+const SERVER_PATCH_HZ = 60;      // 60 snapshots/sec
 const SIM_LOOP_HZ = 60;          // wake-up rate (CPU). Physics still fixed at SERVER_TICK_HZ.
 const MAX_CATCHUP_STEPS = 10;    // prevent spiral of death if server is very behind
 
@@ -39,6 +35,11 @@ const GRAVITY_Y = 40;
 // Health / respawn
 // --------------------
 const DEFAULT_MAX_HEALTH = 100;
+
+// ✅ How long the ragdoll lasts before respawning
+const DEATH_RAGDOLL_SEC = 2.5;
+
+// Respawn point (simple)
 const RESPAWN_X = 600;
 const RESPAWN_Y = 600;
 
@@ -52,6 +53,7 @@ const MAP_CANDIDATES = [
   "./public/assets/maps/level1.json",
 ];
 
+// Distance squared helper
 function dist2(ax, ay, bx, by) {
   const dx = ax - bx;
   const dy = ay - by;
@@ -60,17 +62,19 @@ function dist2(ax, ay, bx, by) {
 
 export default class LobbyRoom extends Room {
   onCreate() {
+    // Create state
     this.setState(new LobbyState());
 
-    // ✅ Patch state 60Hz
+    // Patch rate
     const patchMs = Math.max(1, Math.round(1000 / SERVER_PATCH_HZ));
     if (typeof this.setPatchRate === "function") this.setPatchRate(patchMs);
     else this.patchRate = patchMs;
 
-    // physics world
+    // Physics world
     this.world = planck.World({ gravity: planck.Vec2(0, GRAVITY_Y) });
     this.mouseGroundBody = this.world.createBody();
 
+    // Load map collision
     const loaded = loadTiledMapToPlanck({
       world: this.world,
       ppm: PPM,
@@ -80,7 +84,7 @@ export default class LobbyRoom extends Room {
 
     this.mapJson = loaded.mapJson;
 
-    // spawn powerups from object layer, fallback if missing
+    // Spawn powerups from object layer, fallback if missing
     const spawnPts = this.mapJson ? getObjectPoints(this.mapJson, "SniperSpawns") : [];
     const first = spawnPts[0] || { x: 900, y: 600 };
 
@@ -91,14 +95,19 @@ export default class LobbyRoom extends Room {
     pu.active = true;
     this.state.powerUps.set("sniper_0", pu);
 
-    this.playerSims = new Map();            // sessionId -> PlayerSim
-    this.playerInputs = new Map();          // sessionId -> last input
-    this.powerUpRespawnTimers = new Map();  // puId -> timeout
+    // Runtime maps
+    this.playerSims = new Map();             // sessionId -> PlayerSim
+    this.playerInputs = new Map();           // sessionId -> last input
+    this.powerUpRespawnTimers = new Map();   // puId -> timeout
 
+    // ✅ death timers (ragdoll then respawn)
+    this.deathRespawnTimers = new Map();     // sessionId -> timeout
+
+    // Receive inputs
     this.onMessage("input", (client, msg) => {
       // Compact input format:
       //   { b: bitmask, f: fireSeq, x?: dragX, y?: dragY }
-      //     bit 0 = tiltLeft, bit 1 = tiltRight, bit 2 = dragActive
+      // bit0 = tiltLeft, bit1 = tiltRight, bit2 = dragActive
       const raw = msg || {};
       const b = Number(raw.b);
 
@@ -121,7 +130,7 @@ export default class LobbyRoom extends Room {
       }
     });
 
-    // fixed-step loop
+    // Fixed-step loop timing
     this._accMs = 0;
     this._lastMs = performance.now();
 
@@ -129,18 +138,29 @@ export default class LobbyRoom extends Room {
     this.setSimulationInterval(() => this.simLoop(), loopMs);
   }
 
+  // ------------------------------------------------------------
+  // Player join/leave
+  // ------------------------------------------------------------
   onJoin(client) {
     const ps = new PlayerState();
-    ps.x = 600;
-    ps.y = 600;
+
+    // spawn pose
+    ps.x = RESPAWN_X;
+    ps.y = RESPAWN_Y;
     ps.a = 0;
     ps.dir = 1;
 
+    // health
     ps.maxHealth = DEFAULT_MAX_HEALTH;
     ps.health = DEFAULT_MAX_HEALTH;
 
+    // death flag
+    ps.dead = false;
+
+    // store in state
     this.state.players.set(client.sessionId, ps);
 
+    // create physics sim
     const sim = new PlayerSim({
       world: this.world,
       mouseGroundBody: this.mouseGroundBody,
@@ -150,22 +170,32 @@ export default class LobbyRoom extends Room {
       startYpx: ps.y,
     });
 
+    // store sim + initial input
     this.playerSims.set(client.sessionId, sim);
     this.playerInputs.set(client.sessionId, {});
   }
 
   onLeave(client) {
+    // cancel any death timer for this player
+    this.clearDeathTimer(client.sessionId);
+
+    // destroy sim
     const sim = this.playerSims.get(client.sessionId);
     if (sim) sim.destroy();
 
+    // cleanup maps
     this.playerSims.delete(client.sessionId);
     this.playerInputs.delete(client.sessionId);
+
+    // remove from state
     this.state.players.delete(client.sessionId);
   }
 
+  // ------------------------------------------------------------
+  // Sound helper (compact payload)
+  // ------------------------------------------------------------
   broadcastSound(key, volume = 1, rate = 1) {
     if (!key) return;
-    // Compact keys for bandwidth
     this.broadcast("sound", {
       k: key,
       v: volume,
@@ -173,15 +203,67 @@ export default class LobbyRoom extends Room {
     });
   }
 
+  // ------------------------------------------------------------
+  // Respawn helpers
+  // ------------------------------------------------------------
   getRespawnPoint() {
     return { x: RESPAWN_X, y: RESPAWN_Y };
   }
 
-  respawnPlayer(sessionId) {
+  clearDeathTimer(sessionId) {
+    const t = this.deathRespawnTimers.get(sessionId);
+    if (t) clearTimeout(t);
+    this.deathRespawnTimers.delete(sessionId);
+  }
+
+  killPlayer(sessionId) {
     const st = this.state.players.get(sessionId);
     const sim = this.playerSims.get(sessionId);
     if (!st || !sim) return;
 
+    // already dead => do nothing
+    if (st.dead) return;
+
+    // mark dead in state
+    st.dead = true;
+    st.health = 0;
+
+    // tell sim to ragdoll
+    if (typeof sim.setDead === "function") sim.setDead(true);
+
+    // clear input so they can't keep controlling
+    this.playerInputs.set(sessionId, {});
+
+    // schedule respawn
+    this.clearDeathTimer(sessionId);
+
+    const timeout = setTimeout(() => {
+      // remove timer ref
+      this.deathRespawnTimers.delete(sessionId);
+
+      // player may have left
+      if (!this.state.players.has(sessionId)) return;
+
+      // respawn
+      this.respawnPlayer(sessionId);
+    }, Math.max(0.05, DEATH_RAGDOLL_SEC) * 1000);
+
+    this.deathRespawnTimers.set(sessionId, timeout);
+  }
+
+  respawnPlayer(sessionId) {
+    this.clearDeathTimer(sessionId);
+
+    const st = this.state.players.get(sessionId);
+    const sim = this.playerSims.get(sessionId);
+    if (!st || !sim) return;
+
+    // revive flags
+    st.dead = false;
+
+    if (typeof sim.setDead === "function") sim.setDead(false);
+
+    // choose point
     const pt = this.getRespawnPoint();
 
     // reset health
@@ -189,19 +271,24 @@ export default class LobbyRoom extends Room {
     st.maxHealth = mh;
     st.health = mh;
 
-    // drop everything and teleport (movement logic unchanged)
+    // teleport sim + reset velocities
     sim.respawnAt(pt.x, pt.y);
 
-    // clear input so you don't instantly "release jump" etc.
+    // clear input so you don't instantly "release jump"
     this.playerInputs.set(sessionId, {});
   }
 
+  // ------------------------------------------------------------
+  // Fixed-step loop
+  // ------------------------------------------------------------
   simLoop() {
     const now = performance.now();
     let frameMs = now - this._lastMs;
     this._lastMs = now;
 
+    // avoid huge catchups
     if (frameMs > 250) frameMs = 250;
+
     this._accMs += frameMs;
 
     let steps = 0;
@@ -217,7 +304,7 @@ export default class LobbyRoom extends Room {
   }
 
   fixedStep() {
-    // 1) apply inputs
+    // 1) apply inputs (pre-step)
     const allEvents = [];
 
     for (const [sid, sim] of this.playerSims.entries()) {
@@ -229,32 +316,43 @@ export default class LobbyRoom extends Room {
     // 2) physics step
     this.world.step(FIXED_DT);
 
-    // 2.5) apply damage events (sniper hitscan)
-    // NOTE: This does NOT change physics/movement; it only updates health + respawn.
-    const alreadyRespawned = new Set();
+    // 2.5) apply damage events (hitscan)
+    // - If health reaches 0 => kill + ragdoll + delayed respawn
+    const alreadyKilled = new Set();
+
     for (const e of allEvents) {
       if (!e || e.kind !== "damage") continue;
 
       const to = String(e.to || "");
       if (!to) continue;
-      if (alreadyRespawned.has(to)) continue;
+      if (alreadyKilled.has(to)) continue;
 
       const st = this.state.players.get(to);
       if (!st) continue;
+
+      // dead players cannot be damaged again
+      if (st.dead) continue;
 
       const dmg = Math.max(0, Number(e.amount) || 0);
       const hpNow = Number(st.health) || 0;
       const hpNew = Math.max(0, hpNow - dmg);
       st.health = hpNew;
 
+      // if dead, trigger ragdoll
       if (hpNew <= 0) {
-        alreadyRespawned.add(to);
-        this.respawnPlayer(to);
+        alreadyKilled.add(to);
+        this.killPlayer(to);
       }
     }
 
     // 3) pickups
-    for (const sim of this.playerSims.values()) {
+    for (const [sid, sim] of this.playerSims.entries()) {
+      const st = this.state.players.get(sid);
+
+      // dead players can't pick up weapons
+      if (st?.dead) continue;
+
+      // already holding a gun
       if (sim.hasGun()) continue;
 
       const snap = sim.getStateSnapshot();
@@ -268,17 +366,21 @@ export default class LobbyRoom extends Room {
         if (!def) continue;
 
         const r = Number(def.pickupRadiusPx ?? 80);
+
         if (dist2(px, py, pu.x, pu.y) <= r * r) {
           const ok = sim.giveGun(pu.type);
           if (!ok) continue;
 
           pu.active = false;
 
+          // pickup sound
           if (def.pickupSoundKey) {
             this.broadcastSound(def.pickupSoundKey, def.pickupSoundVolume ?? 1, def.pickupSoundRate ?? 1);
           }
 
+          // respawn powerup later
           const respawnSec = Number(def.respawnSec ?? 6);
+
           if (this.powerUpRespawnTimers.has(puId)) {
             clearTimeout(this.powerUpRespawnTimers.get(puId));
           }
@@ -301,6 +403,9 @@ export default class LobbyRoom extends Room {
 
       const s = sim.getStateSnapshot();
 
+      // sync dead flag (sim is source of truth for physics ragdoll)
+      if (typeof sim.isDead === "function") st.dead = sim.isDead();
+
       st.x = s.x;
       st.y = s.y;
       st.a = s.a;
@@ -319,13 +424,13 @@ export default class LobbyRoom extends Room {
       st.gunA = s.gunA;
     }
 
-    // 5) broadcast events
+    // 5) broadcast events (shots + sounds)
     for (const e of allEvents) {
       if (e.kind === "shot") {
         this.broadcast("shot", e);
 
       } else if (e.kind === "sound") {
-        // ✅ Support both formats: compact (k/v/r) and verbose (key/volume/rate)
+        // supports both compact and verbose format
         const key = e.k ?? e.key;
         const vol = e.v ?? e.volume ?? 1;
         const rate = e.r ?? e.rate ?? 1;

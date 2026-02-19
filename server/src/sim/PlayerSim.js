@@ -2,6 +2,7 @@
 // server/src/sim/PlayerSim.js
 // Server-side Planck simulation for one player.
 // ✅ Gun pose + muzzle + forward + raycast EXACTLY like old client code.
+// ✅ Adds ragdoll/death: when dead, ignore player control and let physics go limp.
 // ============================================================
 
 import planck from "planck";
@@ -41,7 +42,6 @@ const TILT_PAST_MAX_EPS_RAD = 0.001;
 const JUMP_SPEED_PX_PER_SEC = 950;
 
 // If the player's tilt angle (absolute) is ABOVE this, releasing tilt does NOT jump.
-// (Requested: start at 80°)
 const MAX_JUMP_ANGLE_DEG = 80;
 
 export const MOUSE_GRAB_RADIUS_PX = 140;
@@ -69,11 +69,8 @@ const ARM_SHOULDER_LOCAL_Y_PX = -25;
 // --------------------
 // Auto-aim tuning
 // --------------------
-const AUTO_AIM_SPEED_DEG_PER_SEC = 540; // degrees/sec (global)
-const AUTO_AIM_SPEED_RAD_PER_SEC = (AUTO_AIM_SPEED_DEG_PER_SEC * Math.PI) / 180;
-
-// aim a bit above feet (positive Y is DOWN in this project)
-const AUTO_AIM_TARGET_Y_OFFSET_PX = -35;
+const DEFAULT_AUTO_AIM_SPEED_DEG_PER_SEC = 540; // degrees/sec
+const AUTO_AIM_TARGET_Y_OFFSET_PX = -35; // aim a bit above feet (positive Y is DOWN in this project)
 
 const TILT_MAX_ANGLE_RAD = (TILT_MAX_ANGLE_DEG * Math.PI) / 180;
 const MAX_JUMP_ANGLE_RAD = (MAX_JUMP_ANGLE_DEG * Math.PI) / 180;
@@ -83,6 +80,9 @@ const TILT_ROTATE_SPEED_RAD_PER_SEC = (TILT_ROTATE_SPEED_DEG_PER_SEC * Math.PI) 
 const BEAM_DEFAULT_MUZZLE_NORM_X = 0.98;
 const BEAM_DEFAULT_MUZZLE_NORM_Y = 0.5;
 
+// ------------------------------------------------------------
+// Tiny helpers
+// ------------------------------------------------------------
 function clamp(x, min, max) {
   return Math.max(min, Math.min(max, x));
 }
@@ -100,21 +100,35 @@ function rotateXY(x, y, angleRad) {
   return { x: x * c - y * s, y: x * s + y * c };
 }
 
+// Deterministic “random-ish” sign based on sessionId (so each player topples consistently).
+function stableSignFromString(str) {
+  const s = String(str || "");
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  }
+  return (h & 1) ? +1 : -1;
+}
+
 export default class PlayerSim {
   constructor(opts) {
+    // world + networking identity
     this.world = opts.world;
     this.mouseGroundBody = opts.mouseGroundBody;
     this.sessionId = opts.sessionId;
     this.gunCatalog = opts.gunCatalog;
 
+    // facing + weapon state
     this.facingDir = +1;
     this.prevFacingDir = this.facingDir;
 
     this.gunId = "";
     this.ammo = 0;
 
+    // used to detect fire presses (sequence number)
     this.lastFireSeq = 0;
 
+    // grounded + tilt/balance state
     this.touchingGround = false;
     this.groundGraceTimer = 0;
 
@@ -124,24 +138,99 @@ export default class PlayerSim {
     this.holdPastMaxActive = false;
     this.holdPastMaxAngleRad = 0;
 
+    // mouse dragging
     this.isDragging = false;
     this.mouseJoint = null;
 
+    // planck bodies/joints
     this.body = null;
     this.armBody = null;
     this.armJoint = null;
     this.armTopLocalM = null;
 
+    // death state (ragdoll flag)
+    this.dead = false;
+
+    // cached for tilt math
     this.playerBottomLocalYm = this.pxToM(PLAYER_HALF_H_PX);
 
+    // create physics objects
     this.createBody(opts.startXpx, opts.startYpx);
     this.createSwingArm();
   }
 
+  // px <-> meters conversions
   pxToM(px) { return px / PPM; }
   mToPx(m) { return m * PPM; }
 
+  // ------------------------------------------------------------
+  // Death / ragdoll API
+  // ------------------------------------------------------------
+  isDead() {
+    return !!this.dead;
+  }
+
+  setDead(wantDead) {
+    const next = !!wantDead;
+
+    // If already in that state, do nothing.
+    if (next === this.dead) return;
+
+    // Save state.
+    this.dead = next;
+
+    // If becoming dead:
+    if (this.dead) {
+      // Cancel drag so user can't keep pulling while dead.
+      this.endMouseDrag();
+
+      // Drop gun immediately so dead bodies don't keep weapons.
+      this.dropGun();
+
+      // Reset tilt state so respawn doesn't auto-trigger jump behavior.
+      this.prevTiltDir = 0;
+      this.activePivotSide = 0;
+      this.holdPastMaxActive = false;
+      this.holdPastMaxAngleRad = 0;
+
+      // Clear grounding grace so we don't fight balance.
+      this.groundGraceTimer = 0;
+      this.touchingGround = false;
+
+      // Apply a small “topple” impulse so they visibly fall over.
+      // (Sometimes bodies can stay upright if no impulse is applied.)
+      if (this.body) {
+        const sign = stableSignFromString(this.sessionId);
+
+        // Wake up physics.
+        this.body.setAwake(true);
+
+        // Add angular velocity to tip over.
+        const avNow = Number(this.body.getAngularVelocity?.() ?? 0) || 0;
+        this.body.setAngularVelocity(avNow + sign * 8);
+
+        // Add a tiny sideways/hop velocity.
+        const lv = this.body.getLinearVelocity?.();
+        const vxNow = Number(lv?.x ?? 0) || 0;
+        const vyNow = Number(lv?.y ?? 0) || 0;
+
+        const vxAdd = sign * this.pxToM(140); // sideways push
+        const vyAdd = -this.pxToM(60);        // small hop upward
+
+        this.body.setLinearVelocity(Vec2(vxNow + vxAdd, vyNow + vyAdd));
+      }
+    } else {
+      // If reviving: just make sure inputs can work again,
+      // (RespawnAt will reset transform/velocities.)
+      // Nothing required here.
+    }
+  }
+
+  // ------------------------------------------------------------
+  // Body creation
+  // ------------------------------------------------------------
   createBody(startXpx, startYpx) {
+    // main player body
     this.body = this.world.createBody({
       type: "dynamic",
       position: Vec2(this.pxToM(startXpx), this.pxToM(startYpx)),
@@ -151,12 +240,14 @@ export default class PlayerSim {
     // Tag for hitscan damage / identification
     this.body.setUserData({ kind: "player", sessionId: this.sessionId });
 
+    // Main box
     const mainFix = this.body.createFixture(
       pl.Box(this.pxToM(PLAYER_HALF_W_PX), this.pxToM(PLAYER_HALF_H_PX)),
       { density: PLAYER_DENSITY, friction: PLAYER_FRICTION }
     );
     mainFix.setUserData("playerBody");
 
+    // Foot (high friction)
     const footCenterLocal = Vec2(0, this.pxToM(PLAYER_HALF_H_PX - FOOT_HALF_H_PX));
     const footFix = this.body.createFixture(
       pl.Box(this.pxToM(FOOT_HALF_W_PX), this.pxToM(FOOT_HALF_H_PX), footCenterLocal, 0),
@@ -165,6 +256,9 @@ export default class PlayerSim {
     footFix.setUserData("foot");
   }
 
+  // ------------------------------------------------------------
+  // Arm creation
+  // ------------------------------------------------------------
   destroySwingArm() {
     if (this.armJoint) {
       this.world.destroyJoint(this.armJoint);
@@ -178,21 +272,29 @@ export default class PlayerSim {
   }
 
   createSwingArm() {
+    // Shoulder location in player local-space
     const shoulderLocalXpx = ARM_SHOULDER_LOCAL_X_PX * this.facingDir;
     const shoulderLocalYpx = ARM_SHOULDER_LOCAL_Y_PX;
 
+    // Convert shoulder to world point
     const shoulderLocal = Vec2(this.pxToM(shoulderLocalXpx), this.pxToM(shoulderLocalYpx));
     const shoulderWorld = this.body.getWorldPoint(shoulderLocal);
 
+    // Arm dimensions (meters)
     const armHalfWm = this.pxToM(ARM_W_PX / 2);
     const armHalfHm = this.pxToM(ARM_H_PX / 2);
 
+    // Arm top anchor is local (0, -halfH)
     this.armTopLocalM = Vec2(0, -armHalfHm);
 
+    // Start arm with same angle as body
     const startAngle = this.body.getAngle();
+
+    // Position arm so its TOP sits at the shoulder point
     const topOffsetRot = rotateXY(0, -armHalfHm, startAngle);
     const armCenter = Vec2(shoulderWorld.x - topOffsetRot.x, shoulderWorld.y - topOffsetRot.y);
 
+    // Create arm body
     this.armBody = this.world.createBody({
       type: "dynamic",
       position: armCenter,
@@ -200,18 +302,24 @@ export default class PlayerSim {
       fixedRotation: false,
     });
 
+    // Arm fixture (sensor so it doesn't collide)
     const armFix = this.armBody.createFixture(pl.Box(armHalfWm, armHalfHm), {
       density: ARM_DENSITY,
       friction: 0,
     });
 
+    // Tag arm fixture
     armFix.setUserData("arm");
+
+    // Make arm sensor + collision filtered out
     armFix.setSensor(true);
     armFix.setFilterData({ categoryBits: 0x0004, maskBits: 0x0000 });
 
+    // Damping so it swings nicely
     this.armBody.setLinearDamping(ARM_LINEAR_DAMPING);
     this.armBody.setAngularDamping(ARM_ANGULAR_DAMPING);
 
+    // Revolute joint at shoulder
     this.armJoint = this.world.createJoint(
       pl.RevoluteJoint(
         { collideConnected: false, enableLimit: false, enableMotor: false },
@@ -228,7 +336,6 @@ export default class PlayerSim {
   }
 
   // Re-anchor the arm when facing changes, WITHOUT resetting its world angle.
-  // This fixes arm flip while keeping aim stable.
   rebuildArmForFacingPreserveAngle() {
     if (!this.armBody) {
       this.rebuildArmForFacing();
@@ -289,6 +396,9 @@ export default class PlayerSim {
     this.armBody.setAngularVelocity(keepAngVel);
   }
 
+  // ------------------------------------------------------------
+  // Cleanup
+  // ------------------------------------------------------------
   destroy() {
     this.endMouseDrag();
     this.destroySwingArm();
@@ -298,14 +408,17 @@ export default class PlayerSim {
     }
   }
 
-  // --------------------------
+  // ------------------------------------------------------------
   // Respawn (server authoritative)
-  // - Teleports the body, clears velocity, drops gun, resets tilt state.
-  // - DOES NOT change any movement constants/logic.
-  // --------------------------
+  // - Revives player (dead=false)
+  // - Teleports body, clears velocity, drops gun, resets tilt state
+  // ------------------------------------------------------------
   respawnAt(xPx, yPx) {
     const x = Number(xPx) || 0;
     const y = Number(yPx) || 0;
+
+    // Make sure we are alive again.
+    this.setDead(false);
 
     // cancel drag joint (if any)
     this.endMouseDrag();
@@ -336,9 +449,9 @@ export default class PlayerSim {
     this.rebuildArmForFacing();
   }
 
-  // --------------------------
-  // Drag joint
-  // --------------------------
+  // ------------------------------------------------------------
+  // Drag joint (mouse)
+  // ------------------------------------------------------------
   startMouseDrag(worldXpx, worldYpx) {
     if (this.isDragging) return;
 
@@ -348,6 +461,8 @@ export default class PlayerSim {
 
     const dx = worldXpx - bpx;
     const dy = worldYpx - bpy;
+
+    // too far away => ignore
     if (dx * dx + dy * dy > MOUSE_GRAB_RADIUS_PX * MOUSE_GRAB_RADIUS_PX) return;
 
     this.isDragging = true;
@@ -379,6 +494,7 @@ export default class PlayerSim {
   updateMouseDrag(input) {
     const wantDrag = !!input?.dragActive;
 
+    // if not dragging, ensure joint is gone
     if (!wantDrag) {
       this.endMouseDrag();
       return;
@@ -386,18 +502,25 @@ export default class PlayerSim {
 
     const tx = Number(input?.dragX);
     const ty = Number(input?.dragY);
+
+    // invalid target => stop dragging
     if (!Number.isFinite(tx) || !Number.isFinite(ty)) {
       this.endMouseDrag();
       return;
     }
 
+    // create joint if needed
     if (!this.isDragging || !this.mouseJoint) this.startMouseDrag(tx, ty);
-    if (this.isDragging && this.mouseJoint) this.mouseJoint.setTarget(Vec2(this.pxToM(tx), this.pxToM(ty)));
+
+    // update target if joint is active
+    if (this.isDragging && this.mouseJoint) {
+      this.mouseJoint.setTarget(Vec2(this.pxToM(tx), this.pxToM(ty)));
+    }
   }
 
-  // --------------------------
+  // ------------------------------------------------------------
   // Auto-aim helpers
-  // --------------------------
+  // ------------------------------------------------------------
   getArmPivotWorldM() {
     if (this.armJoint && typeof this.armJoint.getAnchorA === "function") {
       const a = this.armJoint.getAnchorA();
@@ -413,6 +536,7 @@ export default class PlayerSim {
   findAutoAimTargetFromPivot(pivotPx, radiusPx) {
     const r = Math.max(0, Number(radiusPx) || 0);
     if (r <= 0) return null;
+
     const r2 = r * r;
 
     let best = null;
@@ -434,6 +558,7 @@ export default class PlayerSim {
       const d2 = dx * dx + dy * dy;
       if (d2 > r2) continue;
 
+      // LoS check: raycast to confirm no wall between pivot and target.
       const dist = Math.sqrt(d2) || 0;
       if (dist > 0.001) {
         const dir = { x: dx / dist, y: dy / dist };
@@ -451,6 +576,7 @@ export default class PlayerSim {
   }
 
   updateAutoAim(fixedDt) {
+    // needs gun + arm
     if (!this.hasGun()) return;
     if (!this.armBody || !this.armTopLocalM) return;
 
@@ -459,6 +585,9 @@ export default class PlayerSim {
 
     const radiusPx = Number(def.aimRadiusPx ?? 0);
     if (!(radiusPx > 0)) return;
+
+    const speedDegPerSec = Number(def.autoAimSpeedDegPerSec ?? DEFAULT_AUTO_AIM_SPEED_DEG_PER_SEC);
+    const speedRadPerSec = (speedDegPerSec * Math.PI) / 180;
 
     const pivotM = this.getArmPivotWorldM();
     if (!pivotM) return;
@@ -472,31 +601,38 @@ export default class PlayerSim {
     const dist = Math.hypot(dx, dy);
     if (dist < 0.001) return;
 
+    // Desired arm “down direction” angle
     const desiredDown = Math.atan2(dy, dx);
+
+    // Arm angle is down - 90deg
     const desiredArmA = wrapRadPi(desiredDown - Math.PI / 2);
 
     const curA = wrapRadPi(this.armBody.getAngle());
     const err = wrapRadPi(desiredArmA - curA);
 
-    const maxStep = AUTO_AIM_SPEED_RAD_PER_SEC * Math.max(0, Number(fixedDt) || 0);
+    // clamp how far we can rotate this tick
+    const maxStep = speedRadPerSec * Math.max(0, Number(fixedDt) || 0);
     const step = clamp(err, -maxStep, +maxStep);
     const nextA = wrapRadPi(curA + step);
 
+    // Move arm so its top stays at the pivot
     const topLocal = this.armTopLocalM;
     const rTop = rotateXY(topLocal.x, topLocal.y, nextA);
     const nextCenter = Vec2(pivotM.x - rTop.x, pivotM.y - rTop.y);
 
+    // Set transform
     this.armBody.setAwake(true);
     this.armBody.setTransform(nextCenter, nextA);
     this.armBody.setAngularVelocity(0);
 
+    // Make arm inherit body velocity (prevents lag)
     const bv = this.body.getLinearVelocity();
     this.armBody.setLinearVelocity(Vec2(bv.x, bv.y));
   }
 
-  // --------------------------
+  // ------------------------------------------------------------
   // Ground rays
-  // --------------------------
+  // ------------------------------------------------------------
   computeGroundedByRays() {
     const rayLenM = this.pxToM(GROUND_RAY_LEN_PX);
     const localStartYM = this.pxToM(PLAYER_HALF_H_PX - GROUND_RAY_START_INSET_PX);
@@ -546,6 +682,9 @@ export default class PlayerSim {
     return { leftHit: castOne(leftX), rightHit: castOne(rightX) };
   }
 
+  // ------------------------------------------------------------
+  // Balance / tilt helpers
+  // ------------------------------------------------------------
   computePDTorqueWrapped(targetAngleRad, kp, kd, maxTorque) {
     const angle = wrapRadPi(this.body.getAngle());
     const angVel = this.body.getAngularVelocity();
@@ -605,6 +744,8 @@ export default class PlayerSim {
 
   doTiltReleaseJump() {
     const angleNow = wrapRadPi(this.body.getAngle());
+
+    // if too tilted, do NOT jump
     if (Math.abs(angleNow) > MAX_JUMP_ANGLE_RAD) return false;
 
     const angForJump = clamp(angleNow, -Math.PI / 2, +Math.PI / 2);
@@ -622,9 +763,9 @@ export default class PlayerSim {
     return true;
   }
 
-  // --------------------------
-  // Guns (unchanged)
-  // --------------------------
+  // ------------------------------------------------------------
+  // Guns
+  // ------------------------------------------------------------
   hasGun() { return !!this.gunId; }
 
   giveGun(gunId) {
@@ -751,10 +892,11 @@ export default class PlayerSim {
 
     this.world.rayCast(startM, endM, (fixture, point, _normal, fraction) => {
       if (!fixture) return -1;
-
       if (typeof fixture.isSensor === "function" && fixture.isSensor()) return -1;
 
       const body = fixture.getBody();
+
+      // ignore self
       if (body === this.body || body === this.armBody) return -1;
 
       if (fraction < bestFraction) {
@@ -780,11 +922,26 @@ export default class PlayerSim {
     return this.raycastBeamHitPx(startPx, dirUnit, maxDistPx).endPx;
   }
 
-  // Called by LobbyRoom each tick BEFORE world.step
+  // ------------------------------------------------------------
+  // applyInput (called each server tick before world.step)
+  // ------------------------------------------------------------
   applyInput(input, fixedDt) {
+    const events = [];
+
+    // ✅ If dead, ignore player control and let physics ragdoll.
+    // BUT consume fireSeq so shots don't "buffer" during death.
+    if (this.dead) {
+      const fireSeqDead = Number(input?.fireSeq) | 0;
+      this.lastFireSeq = fireSeqDead;
+
+      // ensure no mouse joint remains
+      this.endMouseDrag();
+
+      // no events from dead players
+      return events;
+    }
+
     // facing from input
-    // When facing changes, we re-anchor the arm to the correct shoulder.
-    // ✅ Important: we preserve the arm's world angle so aim does NOT reset on flip.
     if (input) {
       const leftDown = !!input.tiltLeft;
       const rightDown = !!input.tiltRight;
@@ -807,10 +964,10 @@ export default class PlayerSim {
     // dragging disables tilt/balance
     this.updateMouseDrag(input);
 
-    // ✅ Auto-aim runs only while holding a gun (and only if that gun has aimRadiusPx > 0)
-    this.updateAutoAim(fixedDt);
-
-    const events = [];
+    // ✅ Guard against missing method (prevents your crash)
+    if (typeof this.updateAutoAim === "function") {
+      this.updateAutoAim(fixedDt);
+    }
 
     // fireSeq -> authoritative shot trigger
     const fireSeq = Number(input?.fireSeq) | 0;
@@ -818,6 +975,8 @@ export default class PlayerSim {
       this.lastFireSeq = fireSeq;
 
       const def = this.gunCatalog?.[this.gunId];
+
+      // only shoot if we have ammo and gun uses bullets
       if (def && this.ammo > 0 && def.bulletEnabled) {
         this.ammo = Math.max(0, (this.ammo - 1) | 0);
 
@@ -829,6 +988,7 @@ export default class PlayerSim {
           const hit = this.raycastBeamHitPx(muzzle, dir, maxDistPx);
           const endPx = hit.endPx;
 
+          // beam event for clients
           events.push({
             kind: "shot",
             sx: muzzle.x,
@@ -841,6 +1001,7 @@ export default class PlayerSim {
             color: Number(def.bulletColor ?? 0xffffff),
           });
 
+          // damage event for server
           const dmg = Number(def.damage ?? 0);
           if (dmg > 0 && hit.hitSessionId && hit.hitSessionId !== this.sessionId) {
             events.push({
@@ -852,6 +1013,7 @@ export default class PlayerSim {
             });
           }
 
+          // fire sound event
           if (def.fireSoundKey) {
             events.push({
               kind: "sound",
@@ -861,6 +1023,7 @@ export default class PlayerSim {
             });
           }
 
+          // optional delayed reload sound
           if (this.ammo > 0 && def.reloadSoundKey) {
             events.push({
               kind: "soundDelayed",
@@ -872,12 +1035,14 @@ export default class PlayerSim {
           }
         }
 
+        // if out of ammo, drop the gun
         if (this.ammo <= 0) {
           this.dropGun();
         }
       }
     }
 
+    // If dragging, do not tilt/balance (same as your original logic)
     if (this.isDragging) {
       this.prevTiltDir = 0;
       this.activePivotSide = 0;
@@ -885,8 +1050,10 @@ export default class PlayerSim {
       return events;
     }
 
+    // If no input object, stop here.
     if (!input) return events;
 
+    // Determine tilt direction
     let tiltDir = 0;
     if (input.tiltLeft) tiltDir -= 1;
     if (input.tiltRight) tiltDir += 1;
@@ -899,6 +1066,7 @@ export default class PlayerSim {
       this.holdPastMaxActive = false;
     }
 
+    // Tilt release jump
     if (tiltAllowedNow && this.prevTiltDir !== 0 && tiltDir === 0) {
       const didJump = this.doTiltReleaseJump();
 
@@ -909,6 +1077,7 @@ export default class PlayerSim {
       if (didJump) return events;
     }
 
+    // Tilt while holding key
     if (tiltAllowedNow && tiltDir !== 0) {
       const angleNow = wrapRadPi(this.body.getAngle());
       const isTiltStartOrSwitch = this.prevTiltDir === 0 || tiltDir !== this.prevTiltDir;
@@ -942,6 +1111,7 @@ export default class PlayerSim {
       return events;
     }
 
+    // No tilt => balance
     this.prevTiltDir = 0;
     this.activePivotSide = 0;
     this.holdPastMaxActive = false;
@@ -961,6 +1131,9 @@ export default class PlayerSim {
     return events;
   }
 
+  // ------------------------------------------------------------
+  // Snapshot for state replication
+  // ------------------------------------------------------------
   getStateSnapshot() {
     const p = this.body.getPosition();
 
