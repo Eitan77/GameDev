@@ -2,8 +2,9 @@
 // server/src/rooms/LobbyRoom.js
 // Server-authoritative physics + collisions + guns.
 //
-// ✅ Adds: death ragdoll + delayed respawn
-// - When health <= 0: mark dead, ragdoll (no control), wait, then respawn.
+// ✅ MOVEMENT-SAFE: does not change PlayerSim movement code
+// ✅ Adds: ragdoll for a short time, then respawn
+// ✅ Adds: death-only knockback (custom per gun)
 // ============================================================
 
 import { Room } from "colyseus";
@@ -21,10 +22,10 @@ import { loadTiledMapToPlanck, getObjectPoints } from "../sim/loadTiledMap.js";
 // --------------------
 // TUNE THESE
 // --------------------
-const SERVER_TICK_HZ = 60;       // physics tick rate (true sim rate)
-const SERVER_PATCH_HZ = 60;      // 60 snapshots/sec
-const SIM_LOOP_HZ = 60;          // wake-up rate (CPU). Physics still fixed at SERVER_TICK_HZ.
-const MAX_CATCHUP_STEPS = 10;    // prevent spiral of death if server is very behind
+const SERVER_TICK_HZ = 60;
+const SERVER_PATCH_HZ = 60;
+const SIM_LOOP_HZ = 60;
+const MAX_CATCHUP_STEPS = 10;
 
 const FIXED_DT = 1 / SERVER_TICK_HZ;
 const FIXED_DT_MS = 1000 / SERVER_TICK_HZ;
@@ -35,13 +36,11 @@ const GRAVITY_Y = 40;
 // Health / respawn
 // --------------------
 const DEFAULT_MAX_HEALTH = 100;
-
-// ✅ How long the ragdoll lasts before respawning
-const DEATH_RAGDOLL_SEC = 2.5;
-
-// Respawn point (simple)
 const RESPAWN_X = 600;
 const RESPAWN_Y = 600;
+
+// ✅ how long they ragdoll before respawn
+const DEATH_RAGDOLL_SEC = 2.0;
 
 // Try both “run from /server” and “run from repo root”
 const MAP_CANDIDATES = [
@@ -53,7 +52,6 @@ const MAP_CANDIDATES = [
   "./public/assets/maps/level1.json",
 ];
 
-// Distance squared helper
 function dist2(ax, ay, bx, by) {
   const dx = ax - bx;
   const dy = ay - by;
@@ -62,19 +60,17 @@ function dist2(ax, ay, bx, by) {
 
 export default class LobbyRoom extends Room {
   onCreate() {
-    // Create state
     this.setState(new LobbyState());
 
-    // Patch rate
+    // Patch state 60Hz
     const patchMs = Math.max(1, Math.round(1000 / SERVER_PATCH_HZ));
     if (typeof this.setPatchRate === "function") this.setPatchRate(patchMs);
     else this.patchRate = patchMs;
 
-    // Physics world
+    // physics world
     this.world = planck.World({ gravity: planck.Vec2(0, GRAVITY_Y) });
     this.mouseGroundBody = this.world.createBody();
 
-    // Load map collision
     const loaded = loadTiledMapToPlanck({
       world: this.world,
       ppm: PPM,
@@ -84,7 +80,7 @@ export default class LobbyRoom extends Room {
 
     this.mapJson = loaded.mapJson;
 
-    // Spawn powerups from object layer, fallback if missing
+    // spawn powerups from object layer, fallback if missing
     const spawnPts = this.mapJson ? getObjectPoints(this.mapJson, "SniperSpawns") : [];
     const first = spawnPts[0] || { x: 900, y: 600 };
 
@@ -95,19 +91,14 @@ export default class LobbyRoom extends Room {
     pu.active = true;
     this.state.powerUps.set("sniper_0", pu);
 
-    // Runtime maps
-    this.playerSims = new Map();             // sessionId -> PlayerSim
-    this.playerInputs = new Map();           // sessionId -> last input
-    this.powerUpRespawnTimers = new Map();   // puId -> timeout
+    this.playerSims = new Map();
+    this.playerInputs = new Map();
+    this.powerUpRespawnTimers = new Map();
 
-    // ✅ death timers (ragdoll then respawn)
-    this.deathRespawnTimers = new Map();     // sessionId -> timeout
+    // ✅ death timers
+    this.deathRespawnTimers = new Map();
 
-    // Receive inputs
     this.onMessage("input", (client, msg) => {
-      // Compact input format:
-      //   { b: bitmask, f: fireSeq, x?: dragX, y?: dragY }
-      // bit0 = tiltLeft, bit1 = tiltRight, bit2 = dragActive
       const raw = msg || {};
       const b = Number(raw.b);
 
@@ -125,12 +116,11 @@ export default class LobbyRoom extends Room {
           fireSeq: Number(raw.f) | 0,
         });
       } else {
-        // Old format (backwards compatibility)
         this.playerInputs.set(client.sessionId, raw);
       }
     });
 
-    // Fixed-step loop timing
+    // fixed-step loop
     this._accMs = 0;
     this._lastMs = performance.now();
 
@@ -138,29 +128,21 @@ export default class LobbyRoom extends Room {
     this.setSimulationInterval(() => this.simLoop(), loopMs);
   }
 
-  // ------------------------------------------------------------
-  // Player join/leave
-  // ------------------------------------------------------------
   onJoin(client) {
     const ps = new PlayerState();
-
-    // spawn pose
-    ps.x = RESPAWN_X;
-    ps.y = RESPAWN_Y;
+    ps.x = 600;
+    ps.y = 600;
     ps.a = 0;
     ps.dir = 1;
 
-    // health
     ps.maxHealth = DEFAULT_MAX_HEALTH;
     ps.health = DEFAULT_MAX_HEALTH;
 
-    // death flag
+    // ✅ alive on join
     ps.dead = false;
 
-    // store in state
     this.state.players.set(client.sessionId, ps);
 
-    // create physics sim
     const sim = new PlayerSim({
       world: this.world,
       mouseGroundBody: this.mouseGroundBody,
@@ -170,100 +152,45 @@ export default class LobbyRoom extends Room {
       startYpx: ps.y,
     });
 
-    // store sim + initial input
     this.playerSims.set(client.sessionId, sim);
     this.playerInputs.set(client.sessionId, {});
   }
 
   onLeave(client) {
-    // cancel any death timer for this player
-    this.clearDeathTimer(client.sessionId);
+    const sid = client.sessionId;
 
-    // destroy sim
-    const sim = this.playerSims.get(client.sessionId);
+    // ✅ clear respawn timer
+    const t = this.deathRespawnTimers.get(sid);
+    if (t) clearTimeout(t);
+    this.deathRespawnTimers.delete(sid);
+
+    const sim = this.playerSims.get(sid);
     if (sim) sim.destroy();
 
-    // cleanup maps
-    this.playerSims.delete(client.sessionId);
-    this.playerInputs.delete(client.sessionId);
-
-    // remove from state
-    this.state.players.delete(client.sessionId);
+    this.playerSims.delete(sid);
+    this.playerInputs.delete(sid);
+    this.state.players.delete(sid);
   }
 
-  // ------------------------------------------------------------
-  // Sound helper (compact payload)
-  // ------------------------------------------------------------
   broadcastSound(key, volume = 1, rate = 1) {
     if (!key) return;
-    this.broadcast("sound", {
-      k: key,
-      v: volume,
-      r: rate,
-    });
+    this.broadcast("sound", { k: key, v: volume, r: rate });
   }
 
-  // ------------------------------------------------------------
-  // Respawn helpers
-  // ------------------------------------------------------------
   getRespawnPoint() {
     return { x: RESPAWN_X, y: RESPAWN_Y };
   }
 
-  clearDeathTimer(sessionId) {
-    const t = this.deathRespawnTimers.get(sessionId);
-    if (t) clearTimeout(t);
-    this.deathRespawnTimers.delete(sessionId);
-  }
-
-  killPlayer(sessionId) {
-    const st = this.state.players.get(sessionId);
-    const sim = this.playerSims.get(sessionId);
-    if (!st || !sim) return;
-
-    // already dead => do nothing
-    if (st.dead) return;
-
-    // mark dead in state
-    st.dead = true;
-    st.health = 0;
-
-    // tell sim to ragdoll
-    if (typeof sim.setDead === "function") sim.setDead(true);
-
-    // clear input so they can't keep controlling
-    this.playerInputs.set(sessionId, {});
-
-    // schedule respawn
-    this.clearDeathTimer(sessionId);
-
-    const timeout = setTimeout(() => {
-      // remove timer ref
-      this.deathRespawnTimers.delete(sessionId);
-
-      // player may have left
-      if (!this.state.players.has(sessionId)) return;
-
-      // respawn
-      this.respawnPlayer(sessionId);
-    }, Math.max(0.05, DEATH_RAGDOLL_SEC) * 1000);
-
-    this.deathRespawnTimers.set(sessionId, timeout);
-  }
-
   respawnPlayer(sessionId) {
-    this.clearDeathTimer(sessionId);
+    // cancel any existing timer
+    const old = this.deathRespawnTimers.get(sessionId);
+    if (old) clearTimeout(old);
+    this.deathRespawnTimers.delete(sessionId);
 
     const st = this.state.players.get(sessionId);
     const sim = this.playerSims.get(sessionId);
     if (!st || !sim) return;
 
-    // revive flags
-    st.dead = false;
-
-    if (typeof sim.setDead === "function") sim.setDead(false);
-
-    // choose point
     const pt = this.getRespawnPoint();
 
     // reset health
@@ -271,24 +198,58 @@ export default class LobbyRoom extends Room {
     st.maxHealth = mh;
     st.health = mh;
 
-    // teleport sim + reset velocities
+    // ✅ revive state
+    st.dead = false;
+
+    // teleport + reset sim
     sim.respawnAt(pt.x, pt.y);
 
-    // clear input so you don't instantly "release jump"
+    // clear input so no instant jump/fire edge cases
     this.playerInputs.set(sessionId, {});
   }
 
-  // ------------------------------------------------------------
-  // Fixed-step loop
-  // ------------------------------------------------------------
+  killPlayer(sessionId, killInfo) {
+    const st = this.state.players.get(sessionId);
+    const sim = this.playerSims.get(sessionId);
+    if (!st || !sim) return;
+
+    // already dead? ignore
+    if (st.dead) return;
+
+    // mark dead
+    st.health = 0;
+    st.dead = true;
+
+    // put sim into ragdoll (movement forces stop)
+    if (typeof sim.setDead === "function") sim.setDead(true);
+
+    // ✅ death-only knockback (direction + strength come from the damage event)
+    const kx = Number(killInfo?.kx);
+    const ky = Number(killInfo?.ky);
+    const kb = Number(killInfo?.kb);
+    const kbu = Number(killInfo?.kbu);
+
+    if (Number.isFinite(kx) && Number.isFinite(ky) && Number.isFinite(kb) && kb > 0) {
+      if (typeof sim.applyDeathKnockback === "function") {
+        sim.applyDeathKnockback(kx, ky, kb, Number.isFinite(kbu) ? kbu : 0);
+      }
+    }
+
+    // schedule respawn
+    const t = setTimeout(() => {
+      this.deathRespawnTimers.delete(sessionId);
+      this.respawnPlayer(sessionId);
+    }, Math.max(0.05, DEATH_RAGDOLL_SEC) * 1000);
+
+    this.deathRespawnTimers.set(sessionId, t);
+  }
+
   simLoop() {
     const now = performance.now();
     let frameMs = now - this._lastMs;
     this._lastMs = now;
 
-    // avoid huge catchups
     if (frameMs > 250) frameMs = 250;
-
     this._accMs += frameMs;
 
     let steps = 0;
@@ -304,7 +265,7 @@ export default class LobbyRoom extends Room {
   }
 
   fixedStep() {
-    // 1) apply inputs (pre-step)
+    // 1) apply inputs
     const allEvents = [];
 
     for (const [sid, sim] of this.playerSims.entries()) {
@@ -316,21 +277,17 @@ export default class LobbyRoom extends Room {
     // 2) physics step
     this.world.step(FIXED_DT);
 
-    // 2.5) apply damage events (hitscan)
-    // - If health reaches 0 => kill + ragdoll + delayed respawn
-    const alreadyKilled = new Set();
-
+    // 2.5) apply damage events
     for (const e of allEvents) {
       if (!e || e.kind !== "damage") continue;
 
       const to = String(e.to || "");
       if (!to) continue;
-      if (alreadyKilled.has(to)) continue;
 
       const st = this.state.players.get(to);
       if (!st) continue;
 
-      // dead players cannot be damaged again
+      // ignore hits while dead (ragdoll period)
       if (st.dead) continue;
 
       const dmg = Math.max(0, Number(e.amount) || 0);
@@ -338,21 +295,14 @@ export default class LobbyRoom extends Room {
       const hpNew = Math.max(0, hpNow - dmg);
       st.health = hpNew;
 
-      // if dead, trigger ragdoll
       if (hpNew <= 0) {
-        alreadyKilled.add(to);
-        this.killPlayer(to);
+        this.killPlayer(to, e);
       }
     }
 
-    // 3) pickups
-    for (const [sid, sim] of this.playerSims.entries()) {
-      const st = this.state.players.get(sid);
-
-      // dead players can't pick up weapons
-      if (st?.dead) continue;
-
-      // already holding a gun
+    // 3) pickups (skip dead players)
+    for (const sim of this.playerSims.values()) {
+      if (typeof sim.isDead === "function" && sim.isDead()) continue;
       if (sim.hasGun()) continue;
 
       const snap = sim.getStateSnapshot();
@@ -366,21 +316,17 @@ export default class LobbyRoom extends Room {
         if (!def) continue;
 
         const r = Number(def.pickupRadiusPx ?? 80);
-
         if (dist2(px, py, pu.x, pu.y) <= r * r) {
           const ok = sim.giveGun(pu.type);
           if (!ok) continue;
 
           pu.active = false;
 
-          // pickup sound
           if (def.pickupSoundKey) {
             this.broadcastSound(def.pickupSoundKey, def.pickupSoundVolume ?? 1, def.pickupSoundRate ?? 1);
           }
 
-          // respawn powerup later
           const respawnSec = Number(def.respawnSec ?? 6);
-
           if (this.powerUpRespawnTimers.has(puId)) {
             clearTimeout(this.powerUpRespawnTimers.get(puId));
           }
@@ -403,9 +349,6 @@ export default class LobbyRoom extends Room {
 
       const s = sim.getStateSnapshot();
 
-      // sync dead flag (sim is source of truth for physics ragdoll)
-      if (typeof sim.isDead === "function") st.dead = sim.isDead();
-
       st.x = s.x;
       st.y = s.y;
       st.a = s.a;
@@ -424,13 +367,12 @@ export default class LobbyRoom extends Room {
       st.gunA = s.gunA;
     }
 
-    // 5) broadcast events (shots + sounds)
+    // 5) broadcast events
     for (const e of allEvents) {
       if (e.kind === "shot") {
         this.broadcast("shot", e);
 
       } else if (e.kind === "sound") {
-        // supports both compact and verbose format
         const key = e.k ?? e.key;
         const vol = e.v ?? e.volume ?? 1;
         const rate = e.r ?? e.rate ?? 1;

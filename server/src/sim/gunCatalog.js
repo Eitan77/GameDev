@@ -1,20 +1,18 @@
 // ============================================================
 // src/gunCatalog.js
 // Client-side gun definitions (must match server).
-// Uses SAME keys/paths/values you had in SniperGunPowerUp.
+// ✅ Added deathKnockbackPxPerSec / deathKnockbackUpPxPerSec
 // ============================================================
 
 export const GUN_CATALOG = {
   sniper: {
     id: "sniper",
 
-    // pickup sprite (ground)
     pickupKey: "sniper_pickup",
     pickupPath: "assets/images/sniper_pickup.png",
     pickupWpx: 160,
     pickupHpx: 48,
 
-    // held sprite (hand)
     heldKey: "sniper_held",
     heldPath: "assets/images/sniper_held.png",
     heldWpx: 160,
@@ -27,17 +25,17 @@ export const GUN_CATALOG = {
     heldAngleOffsetRad: Math.PI / 2,
     heldFlipWithPlayer: true,
 
-    // ammo
     ammo: 5,
 
-    // ✅ auto-aim (server uses these; client keeps them for "must match server")
     aimRadiusPx: 900,
     autoAimSpeedDegPerSec: 300,
 
-    // damage per hit (server authoritative)
     damage: 50,
 
-    // sounds
+    // ✅ Death-only knockback (ONLY applied if this hit kills)
+    deathKnockbackPxPerSec: 2000,     // main push strength
+    deathKnockbackUpPxPerSec: 160,    // extra upward pop (optional)
+
     pickupSoundKey: "sniper_pickup_snd",
     pickupSoundPath: "assets/audio/sniper_pickup.mp3",
     pickupSoundVolume: 0.7,
@@ -55,7 +53,6 @@ export const GUN_CATALOG = {
 
     fireToReloadDelaySec: 0.5,
 
-    // hitscan beam visuals (client renders what server tells it, but values match)
     bulletEnabled: true,
     bulletWidthPx: 10,
     bulletLifetimeSec: 0.05,
@@ -65,7 +62,6 @@ export const GUN_CATALOG = {
     bulletMuzzleNormX: 0.98,
     bulletMuzzleNormY: 0.5,
 
-    // pickup behavior
     pickupRadiusPx: 80,
     respawnSec: 6,
   },
@@ -76,7 +72,6 @@ export function preloadGuns(scene) {
     scene.load.image(g.pickupKey, g.pickupPath);
     scene.load.image(g.heldKey, g.heldPath);
 
-    // audio
     scene.load.audio(g.pickupSoundKey, g.pickupSoundPath);
     scene.load.audio(g.fireSoundKey, g.fireSoundPath);
     scene.load.audio(g.reloadSoundKey, g.reloadSoundPath);
