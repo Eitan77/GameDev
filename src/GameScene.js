@@ -5,16 +5,8 @@
 // - Client renders sprites, VFX, and plays audio.
 // - Client sends compact inputs.
 //
-// FIX FOR YOUR CAMERA "GHOST":
-// ✅ Remove custom follow-point deadzone (it was causing jitter when camera scroll begins)
-// ✅ Use Phaser's built-in camera deadzone instead (stable, no feedback loop)
-//
-// Also includes:
-// ✅ Duplicate-guard: if onAdd fires twice for same sessionId, destroy old sprites first
-// ✅ Cleanup on scene shutdown so listeners/rooms don’t stack
-//
-// Death / ragdoll support:
-// ✅ If local player is dead, block drag + tilt + fire input
+// ✅ Adds checkpoint markers (no collision) at Tiled "PlayerSpawnPoints"
+//    using image: assets/images/checkpoint.png (key: "checkpoint")
 // ============================================================
 
 import Phaser from "phaser";
@@ -165,6 +157,9 @@ export default class GameScene extends Phaser.Scene {
 
     this.powerUps = new Map();
 
+    // ✅ checkpoint marker sprites (no collision)
+    this.checkpointSprites = [];
+
     this.dragActive = false;
     this.dragX = 0;
     this.dragY = 0;
@@ -183,6 +178,9 @@ export default class GameScene extends Phaser.Scene {
     this.load.image("player", "assets/images/player.png");
     this.load.image("arm", "assets/images/arm.png");
 
+    // ✅ checkpoint marker image
+    this.load.image("checkpoint", "assets/images/checkpoint.png");
+
     GameMap.preload(this);
     preloadGuns(this);
 
@@ -193,6 +191,9 @@ export default class GameScene extends Phaser.Scene {
 
   async create() {
     this.map = new GameMap(this).create();
+
+    // ✅ spawn checkpoint marker images at Tiled respawn points
+    this.spawnCheckpointMarkers();
 
     this.statusText = this.add
       .text(20, 20, "Connecting...", { fontSize: "18px", color: "#ffffff" })
@@ -249,7 +250,10 @@ export default class GameScene extends Phaser.Scene {
     try {
       this.client = new Client(COLYSEUS_URL);
       this.room = await this.client.joinOrCreate(ROOM_NAME);
+
+      // ✅ IMPORTANT: Callbacks is NOT constructed with `new` in your project
       this.callbacks = Callbacks.get(this.room);
+
       this.statusText.setText(`Connected: ${COLYSEUS_URL}`);
 
       this.registerCleanup();
@@ -372,6 +376,38 @@ export default class GameScene extends Phaser.Scene {
     });
   }
 
+  // ✅ Simple: create an image at each Tiled point in "PlayerSpawnPoints"
+  // No physics body is created => no collision.
+  spawnCheckpointMarkers() {
+    // clear old markers if scene restarts
+    for (const s of this.checkpointSprites) {
+      try { s.destroy(); } catch (_) {}
+    }
+    this.checkpointSprites = [];
+
+    const tilemap = this.map?.map;
+    if (!tilemap || typeof tilemap.getObjectLayer !== "function") return;
+
+    const layer = tilemap.getObjectLayer("PlayerSpawnPoints");
+    const objs = Array.isArray(layer?.objects) ? layer.objects : [];
+
+    for (const o of objs) {
+      const x = Number(o?.x);
+      const y = Number(o?.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+
+      const img = this.add.image(x, y+232, "checkpoint");
+
+      // Usually you want the bottom of the sprite to sit on the point
+      img.setOrigin(0.5, 1);
+
+      // Put behind players
+      img.setDepth(1);
+
+      this.checkpointSprites.push(img);
+    }
+  }
+
   applyCameraTuning() {
     const cam = this.cameras.main;
 
@@ -421,6 +457,12 @@ export default class GameScene extends Phaser.Scene {
       try { v.destroy?.(); } catch (_) {}
     }
     this.powerUps.clear();
+
+    // ✅ destroy checkpoint markers
+    for (const s of this.checkpointSprites) {
+      try { s.destroy(); } catch (_) {}
+    }
+    this.checkpointSprites = [];
 
     try { this.room?.leave(); } catch (_) {}
     this.room = null;
