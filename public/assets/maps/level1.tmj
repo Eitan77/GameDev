@@ -68,8 +68,101 @@
                  "type":"",
                  "visible":true,
                  "width":0,
-                 "x":842.424242424242,
-                 "y":766.666666666667
+                 "x":869.696969696969,
+                 "y":824.242424242424
+                }],
+         "opacity":1,
+         "type":"objectgroup",
+         "visible":true,
+         "x":0,
+         "y":0
+        }, 
+        {
+         "draworder":"topdown",
+         "id":5,
+         "name":"PlayerSpawnPoints",
+         "objects":[
+                {
+                 "height":0,
+                 "id":2,
+                 "name":"",
+                 "point":true,
+                 "properties":[
+                        {
+                         "name":"id",
+                         "type":"string",
+                         "value":"cp01p"
+                        }],
+                 "rotation":0,
+                 "type":"",
+                 "visible":true,
+                 "width":0,
+                 "x":300,
+                 "y":700
+                }, 
+                {
+                 "height":0,
+                 "id":9,
+                 "name":"",
+                 "point":true,
+                 "properties":[
+                        {
+                         "name":"id",
+                         "type":"string",
+                         "value":"cp02p"
+                        }],
+                 "rotation":0,
+                 "type":"",
+                 "visible":true,
+                 "width":0,
+                 "x":1250,
+                 "y":700
+                }],
+         "opacity":1,
+         "type":"objectgroup",
+         "visible":true,
+         "x":0,
+         "y":0
+        }, 
+        {
+         "draworder":"topdown",
+         "id":6,
+         "locked":true,
+         "name":"PlayerSpawnHitboxes",
+         "objects":[
+                {
+                 "height":500,
+                 "id":6,
+                 "name":"",
+                 "properties":[
+                        {
+                         "name":"id",
+                         "type":"string",
+                         "value":"cp01b"
+                        }],
+                 "rotation":0,
+                 "type":"",
+                 "visible":true,
+                 "width":100,
+                 "x":250,
+                 "y":400
+                }, 
+                {
+                 "height":500,
+                 "id":8,
+                 "name":"",
+                 "properties":[
+                        {
+                         "name":"id",
+                         "type":"string",
+                         "value":"cp02b"
+                        }],
+                 "rotation":0,
+                 "type":"",
+                 "visible":true,
+                 "width":100,
+                 "x":1200,
+                 "y":400
                 }],
          "opacity":1,
          "type":"objectgroup",
@@ -77,8 +170,8 @@
          "x":0,
          "y":0
         }],
- "nextlayerid":5,
- "nextobjectid":2,
+ "nextlayerid":7,
+ "nextobjectid":10,
  "orientation":"orthogonal",
  "renderorder":"right-down",
  "tiledversion":"1.11.2",

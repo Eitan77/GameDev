@@ -19,6 +19,17 @@ import PlayerSim, { PPM } from "../sim/PlayerSim.js";
 import { GUN_CATALOG } from "../sim/gunCatalog.js";
 import { loadTiledMapToPlanck, getObjectPoints } from "../sim/loadTiledMap.js";
 
+// ============================================================
+// Checkpoints (Tiled object layers)
+//
+// You created:
+//  - PlayerSpawnHitboxes (rectangles) with string property: id = "cp01b", "cp02b", ...
+//  - PlayerSpawnPoints  (points)     with string property: id = "cp01p", "cp02p", ...
+//
+// This code treats "cp01b" and "cp01p" as the same checkpoint by
+// stripping the trailing "b" or "p" and using the base id ("cp01").
+// ============================================================
+
 // --------------------
 // TUNE THESE
 // --------------------
@@ -58,6 +69,78 @@ function dist2(ax, ay, bx, by) {
   return dx * dx + dy * dy;
 }
 
+// --------------------
+// Tiled helpers
+// --------------------
+function flattenTiledLayers(layers, out = []) {
+  const arr = Array.isArray(layers) ? layers : [];
+  for (const l of arr) {
+    if (!l) continue;
+    if (l.type === "group" && Array.isArray(l.layers)) {
+      flattenTiledLayers(l.layers, out);
+    } else {
+      out.push(l);
+    }
+  }
+  return out;
+}
+
+function getObjectLayer(mapJson, layerName) {
+  const all = flattenTiledLayers(mapJson?.layers);
+  return all.find((l) => l.type === "objectgroup" && l.name === layerName) || null;
+}
+
+function getTiledPropValue(obj, propName) {
+  const want = String(propName || "").toLowerCase();
+  const props = Array.isArray(obj?.properties) ? obj.properties : [];
+  for (const p of props) {
+    const n = String(p?.name || "").toLowerCase();
+    if (n === want) return p?.value;
+  }
+  return undefined;
+}
+
+function normalizeCheckpointBaseId(rawId) {
+  const id = String(rawId || "").trim();
+  if (!id) return "";
+  const last = id[id.length - 1].toLowerCase();
+  if ((last === "b" || last === "p") && id.length > 1) return id.slice(0, -1);
+  return id;
+}
+
+function checkpointOrderFromBaseId(baseId) {
+  const s = String(baseId || "");
+  const m = s.match(/\d+/);
+  if (!m) return NaN;
+  const v = parseInt(m[0], 10);
+  return Number.isFinite(v) ? v : NaN;
+}
+
+function shouldUpgradeCheckpoint(curBaseId, newBaseId) {
+  if (!newBaseId) return false;
+  if (!curBaseId) return true;
+  if (curBaseId === newBaseId) return false;
+
+  const curOrder = checkpointOrderFromBaseId(curBaseId);
+  const newOrder = checkpointOrderFromBaseId(newBaseId);
+
+  if (Number.isFinite(curOrder) && Number.isFinite(newOrder)) {
+    return newOrder > curOrder;
+  }
+
+  // Fallback: lexical compare if orders aren't numeric
+  return String(newBaseId) > String(curBaseId);
+}
+
+function pointInRect(px, py, rect) {
+  return (
+    px >= rect.x &&
+    px <= rect.x + rect.w &&
+    py >= rect.y &&
+    py <= rect.y + rect.h
+  );
+}
+
 export default class LobbyRoom extends Room {
   onCreate() {
     this.setState(new LobbyState());
@@ -79,6 +162,84 @@ export default class LobbyRoom extends Room {
     });
 
     this.mapJson = loaded.mapJson;
+
+    // ------------------------------------------------------------
+    // Checkpoints: read from Tiled object layers
+    // ------------------------------------------------------------
+    this.checkpointSpawnsByBaseId = new Map(); // baseId -> {x,y}
+    this.checkpointTriggers = [];              // [{ baseId, x,y,w,h }]
+
+    // Per-player respawn tracking
+    this.playerCheckpointBaseId = new Map();   // sid -> baseId (ex: "cp02")
+    this.playerRespawnBySid = new Map();       // sid -> {x,y}
+    this.playerInsideCheckpoint = new Map();   // sid -> Set(baseId) for edge-triggered entry
+
+    // Default spawn if no checkpoints exist
+    this.defaultRespawn = { x: RESPAWN_X, y: RESPAWN_Y, baseId: "", order: NaN };
+
+    if (this.mapJson) {
+      // Spawn points
+      const spawnLayer = getObjectLayer(this.mapJson, "PlayerSpawnPoints");
+      const spawnObjs = Array.isArray(spawnLayer?.objects) ? spawnLayer.objects : [];
+
+      for (const o of spawnObjs) {
+        const rawId = getTiledPropValue(o, "id");
+        const baseId = normalizeCheckpointBaseId(rawId);
+        const x = Number(o?.x);
+        const y = Number(o?.y);
+        if (!baseId || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+        this.checkpointSpawnsByBaseId.set(baseId, { x: Math.round(x), y: Math.round(y) });
+      }
+
+      // Trigger rectangles
+      const hitboxLayer = getObjectLayer(this.mapJson, "PlayerSpawnHitboxes");
+      const hitboxObjs = Array.isArray(hitboxLayer?.objects) ? hitboxLayer.objects : [];
+
+      for (const o of hitboxObjs) {
+        const rawId = getTiledPropValue(o, "id");
+        const baseId = normalizeCheckpointBaseId(rawId);
+
+        const x = Number(o?.x);
+        const y = Number(o?.y);
+        const w = Number(o?.width);
+        const h = Number(o?.height);
+
+        // You said you used rectangles. If you ever switch to polygons later,
+        // we can add point-in-polygon checks.
+        if (!baseId || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) continue;
+        if (!(w > 0) || !(h > 0)) continue;
+
+        this.checkpointTriggers.push({
+          baseId,
+          x,
+          y,
+          w,
+          h,
+        });
+      }
+
+      // Pick a default spawn from the lowest numbered checkpoint (cp01, cp02, ...)
+      if (this.checkpointSpawnsByBaseId.size > 0) {
+        const bases = Array.from(this.checkpointSpawnsByBaseId.keys());
+        bases.sort((a, b) => {
+          const ao = checkpointOrderFromBaseId(a);
+          const bo = checkpointOrderFromBaseId(b);
+          if (Number.isFinite(ao) && Number.isFinite(bo) && ao !== bo) return ao - bo;
+          return String(a).localeCompare(String(b));
+        });
+
+        const baseId = bases[0];
+        const pos = this.checkpointSpawnsByBaseId.get(baseId);
+        if (pos) {
+          this.defaultRespawn = {
+            x: pos.x,
+            y: pos.y,
+            baseId,
+            order: checkpointOrderFromBaseId(baseId),
+          };
+        }
+      }
+    }
 
     // spawn powerups from object layer, fallback if missing
     const spawnPts = this.mapJson ? getObjectPoints(this.mapJson, "SniperSpawns") : [];
@@ -129,9 +290,15 @@ export default class LobbyRoom extends Room {
   }
 
   onJoin(client) {
+    // ------------------------------------------------------------
+    // Spawn at the current default checkpoint (or fallback coords)
+    // ------------------------------------------------------------
+    const spawnX = Number(this.defaultRespawn?.x) || RESPAWN_X;
+    const spawnY = Number(this.defaultRespawn?.y) || RESPAWN_Y;
+
     const ps = new PlayerState();
-    ps.x = 600;
-    ps.y = 600;
+    ps.x = spawnX;
+    ps.y = spawnY;
     ps.a = 0;
     ps.dir = 1;
 
@@ -143,13 +310,20 @@ export default class LobbyRoom extends Room {
 
     this.state.players.set(client.sessionId, ps);
 
+    // Initialize this player's checkpoint + respawn
+    const sid = client.sessionId;
+    const baseId = String(this.defaultRespawn?.baseId || "");
+    if (baseId) this.playerCheckpointBaseId.set(sid, baseId);
+    this.playerRespawnBySid.set(sid, { x: spawnX, y: spawnY });
+    this.playerInsideCheckpoint.set(sid, new Set());
+
     const sim = new PlayerSim({
       world: this.world,
       mouseGroundBody: this.mouseGroundBody,
       sessionId: client.sessionId,
       gunCatalog: GUN_CATALOG,
-      startXpx: ps.x,
-      startYpx: ps.y,
+      startXpx: spawnX,
+      startYpx: spawnY,
     });
 
     this.playerSims.set(client.sessionId, sim);
@@ -170,6 +344,11 @@ export default class LobbyRoom extends Room {
     this.playerSims.delete(sid);
     this.playerInputs.delete(sid);
     this.state.players.delete(sid);
+
+    // checkpoints
+    this.playerCheckpointBaseId.delete(sid);
+    this.playerRespawnBySid.delete(sid);
+    this.playerInsideCheckpoint.delete(sid);
   }
 
   broadcastSound(key, volume = 1, rate = 1) {
@@ -177,7 +356,24 @@ export default class LobbyRoom extends Room {
     this.broadcast("sound", { k: key, v: volume, r: rate });
   }
 
-  getRespawnPoint() {
+  // ------------------------------------------------------------
+  // Respawn point (uses last activated checkpoint if available)
+  // ------------------------------------------------------------
+  getRespawnPoint(sessionId) {
+    const sid = String(sessionId || "");
+
+    if (sid) {
+      const saved = this.playerRespawnBySid.get(sid);
+      if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+        return { x: saved.x, y: saved.y };
+      }
+    }
+
+    const d = this.defaultRespawn;
+    if (d && Number.isFinite(d.x) && Number.isFinite(d.y)) {
+      return { x: d.x, y: d.y };
+    }
+
     return { x: RESPAWN_X, y: RESPAWN_Y };
   }
 
@@ -191,7 +387,7 @@ export default class LobbyRoom extends Room {
     const sim = this.playerSims.get(sessionId);
     if (!st || !sim) return;
 
-    const pt = this.getRespawnPoint();
+    const pt = this.getRespawnPoint(sessionId);
 
     // reset health
     const mh = Number(st.maxHealth) || DEFAULT_MAX_HEALTH;
@@ -203,6 +399,10 @@ export default class LobbyRoom extends Room {
 
     // teleport + reset sim
     sim.respawnAt(pt.x, pt.y);
+
+    // After teleport, clear "inside" sets so future checkpoint entries
+    // are detected cleanly.
+    this.playerInsideCheckpoint.set(sessionId, new Set());
 
     // clear input so no instant jump/fire edge cases
     this.playerInputs.set(sessionId, {});
@@ -242,6 +442,61 @@ export default class LobbyRoom extends Room {
     }, Math.max(0.05, DEATH_RAGDOLL_SEC) * 1000);
 
     this.deathRespawnTimers.set(sessionId, t);
+  }
+
+  // ------------------------------------------------------------
+  // Checkpoints
+  // ------------------------------------------------------------
+  tryActivateCheckpoint(sessionId, baseId) {
+    const sid = String(sessionId || "");
+    const b = String(baseId || "");
+    if (!sid || !b) return;
+
+    // Must have a spawn point for this checkpoint
+    const spawn = this.checkpointSpawnsByBaseId?.get(b);
+    if (!spawn) return;
+
+    const cur = this.playerCheckpointBaseId.get(sid) || String(this.defaultRespawn?.baseId || "");
+    if (!shouldUpgradeCheckpoint(cur, b)) return;
+
+    this.playerCheckpointBaseId.set(sid, b);
+    this.playerRespawnBySid.set(sid, { x: spawn.x, y: spawn.y });
+
+    // Optional: notify clients (safe if clients ignore it)
+    this.broadcast("checkpoint", { sid, id: b, x: spawn.x, y: spawn.y });
+  }
+
+  updatePlayerCheckpoints() {
+    if (!Array.isArray(this.checkpointTriggers) || this.checkpointTriggers.length === 0) return;
+
+    for (const [sid, sim] of this.playerSims.entries()) {
+      const st = this.state.players.get(sid);
+      if (!st || st.dead) continue;
+      if (!sim || !sim.body) continue;
+
+      // Player position in pixels (body center)
+      const p = sim.body.getPosition();
+      const px = p.x * PPM;
+      const py = p.y * PPM;
+
+      const prevInside = this.playerInsideCheckpoint.get(sid) || new Set();
+      const nowInside = new Set();
+
+      for (const t of this.checkpointTriggers) {
+        if (!t || !t.baseId) continue;
+        const inside = pointInRect(px, py, t);
+        if (!inside) continue;
+
+        nowInside.add(t.baseId);
+
+        // Edge-trigger: only when we ENTER this rectangle
+        if (!prevInside.has(t.baseId)) {
+          this.tryActivateCheckpoint(sid, t.baseId);
+        }
+      }
+
+      this.playerInsideCheckpoint.set(sid, nowInside);
+    }
   }
 
   simLoop() {
@@ -299,6 +554,9 @@ export default class LobbyRoom extends Room {
         this.killPlayer(to, e);
       }
     }
+
+    // 2.75) checkpoints (after physics + damage)
+    this.updatePlayerCheckpoints();
 
     // 3) pickups (skip dead players)
     for (const sim of this.playerSims.values()) {
