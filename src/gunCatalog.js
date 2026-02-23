@@ -62,7 +62,7 @@ export const GUN_CATALOG = {
     bulletMuzzleNormX: 0.98,
     bulletMuzzleNormY: 0.5,
 
-    pickupRadiusPx: 80,
+    pickupRadiusPx: 100,
     respawnSec: 6,
   },
 };

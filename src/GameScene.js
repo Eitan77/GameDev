@@ -28,7 +28,7 @@ export const NET_SEND_HZ = 60;
 // ------------------------------------------------------------
 // Camera tuning
 // ------------------------------------------------------------
-const CAMERA_ZOOM = 0.7;
+const CAMERA_ZOOM = 0.9;
 
 const CAMERA_FOLLOW_LERP_X = 1;
 const CAMERA_FOLLOW_LERP_Y = 1;
@@ -37,7 +37,7 @@ const CAMERA_DEADZONE_W_PX = 420;
 const CAMERA_DEADZONE_H_PX = 260;
 
 const CAMERA_DEADZONE_ANCHOR_X = 0.5;
-const CAMERA_DEADZONE_ANCHOR_Y = 0.55;
+const CAMERA_DEADZONE_ANCHOR_Y = 0.4;
 
 const CAMERA_ROUND_PIXELS = false;
 

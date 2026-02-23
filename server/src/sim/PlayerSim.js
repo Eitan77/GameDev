@@ -26,7 +26,7 @@ const PLAYER_FRICTION = 0.5;
 
 const FOOT_HALF_W_PX = 22;
 const FOOT_HALF_H_PX = 10;
-const FOOT_FRICTION = 20;
+const FOOT_FRICTION = 40;
 const FOOT_DENSITY = 0.0;
 
 const BALANCE_TARGET_ANGLE_DEG = 7.5;

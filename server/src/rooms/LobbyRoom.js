@@ -141,16 +141,6 @@ function pointInRect(px, py, rect) {
   );
 }
 
-function rectsOverlap(a, b) {
-  // Inclusive overlap so "touching" counts as contact
-  return (
-    a.x <= b.x + b.w &&
-    a.x + a.w >= b.x &&
-    a.y <= b.y + b.h &&
-    a.y + a.h >= b.y
-  );
-}
-
 export default class LobbyRoom extends Room {
   onCreate() {
     this.setState(new LobbyState());
@@ -172,55 +162,6 @@ export default class LobbyRoom extends Room {
     });
 
     this.mapJson = loaded.mapJson;
-
-    // ------------------------------------------------------------
-    // KillZones (Tiled object layer)
-    // - Object layer name: "KillZones"
-    // - Rectangles drawn in the layer
-    // - Custom bool property: "Kills" (true)
-    //
-    // Implemented like the spawn/checkpoint hitboxes:
-    // - Read each rectangle object in the KillZones layer (or ANY object layer with Kills=true)
-    // - Keep only objects where Kills=true (supports Kills on the layer OR on the object)
-    // - Each fixed step, if the player's physical body overlaps a kill rect, they die.
-    // ------------------------------------------------------------
-    this.killZoneRects = []; // [{x,y,w,h}]
-    if (this.mapJson) {
-      const allLayers = flattenTiledLayers(this.mapJson?.layers);
-
-      // Primary: layer named "KillZones"
-      // Fallback: any object layer that has custom property Kills=true
-      const killLayers = allLayers.filter((l) => {
-        if (!l || l.type !== "objectgroup") return false;
-        if (l.name === "KillZones") return true;
-        return !!getTiledPropValue(l, "Kills");
-      });
-
-      for (const kzLayer of killLayers) {
-        const kzObjs = Array.isArray(kzLayer?.objects) ? kzLayer.objects : [];
-
-        // If you set Kills=true on the layer, it enables all rectangles by default.
-        // Also treat a layer literally named "KillZones" as enabled by default.
-        const layerKillsDefault = !!getTiledPropValue(kzLayer, "Kills") || kzLayer?.name === "KillZones";
-
-        for (const o of kzObjs) {
-          const killsProp = getTiledPropValue(o, "Kills");
-          const killsEnabled = (killsProp === undefined) ? layerKillsDefault : !!killsProp;
-          if (!killsEnabled) continue;
-
-          const x = Number(o?.x);
-          const y = Number(o?.y);
-          const w = Number(o?.width);
-          const h = Number(o?.height);
-
-          // Rectangles only
-          if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) continue;
-          if (!(w > 0) || !(h > 0)) continue;
-
-          this.killZoneRects.push({ x, y, w, h });
-        }
-      }
-    }
 
     // ------------------------------------------------------------
     // Checkpoints: read from Tiled object layers
@@ -301,15 +242,60 @@ export default class LobbyRoom extends Room {
     }
 
     // spawn powerups from object layer, fallback if missing
-    const spawnPts = this.mapJson ? getObjectPoints(this.mapJson, "SniperSpawns") : [];
-    const first = spawnPts[0] || { x: 900, y: 600 };
+    // New map format:
+    //  - Object layer name: "PowerUpSpawns"
+    //  - Point objects in that layer have bool property: PowerUpSpawn = true
+    //
+    // We detect these the same way we detect PlayerSpawnPoints:
+    // read the object layer directly and use each object's (x,y).
+    const sniperSpawnPts = [];
 
-    const pu = new PowerUpState();
-    pu.type = "sniper";
-    pu.x = Math.round(first.x);
-    pu.y = Math.round(first.y);
-    pu.active = true;
-    this.state.powerUps.set("sniper_0", pu);
+    if (this.mapJson) {
+      const puLayer = getObjectLayer(this.mapJson, "PowerUpSpawns");
+      const puObjs = Array.isArray(puLayer?.objects) ? puLayer.objects : [];
+
+      for (const o of puObjs) {
+        const enabled = !!getTiledPropValue(o, "PowerUpSpawn");
+        if (!enabled) continue;
+
+        const x = Number(o?.x);
+        const y = Number(o?.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+
+        sniperSpawnPts.push({ x: Math.round(x), y: Math.round(y) });
+      }
+
+      // Back-compat: older maps may still have "SniperSpawns"
+      if (sniperSpawnPts.length === 0) {
+        const oldPts = getObjectPoints(this.mapJson, "SniperSpawns");
+        if (Array.isArray(oldPts)) {
+          for (const pt of oldPts) {
+            const x = Number(pt?.x);
+            const y = Number(pt?.y);
+            if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+            sniperSpawnPts.push({ x: Math.round(x), y: Math.round(y) });
+          }
+        }
+      }
+    }
+
+    // Fallback if none exist in the map
+    if (sniperSpawnPts.length === 0) {
+      sniperSpawnPts.push({ x: 900, y: 600 });
+    }
+
+    // Spawn a sniper powerup at EACH point
+    for (let i = 0; i < sniperSpawnPts.length; i++) {
+      const pt = sniperSpawnPts[i];
+
+      const pu = new PowerUpState();
+      pu.type = "sniper";
+      pu.x = pt.x;
+      pu.y = pt.y;
+      pu.active = true;
+
+      this.state.powerUps.set(`sniper_${i}`, pu);
+    }
 
     this.playerSims = new Map();
     this.playerInputs = new Map();
@@ -525,69 +511,6 @@ export default class LobbyRoom extends Room {
     this.broadcast("checkpoint", { sid, id: b, x: spawn.x, y: spawn.y });
   }
 
-  // ------------------------------------------------------------
-  // KillZones
-  // ------------------------------------------------------------
-  updateKillZones() {
-    if (!Array.isArray(this.killZoneRects) || this.killZoneRects.length === 0) return;
-
-    for (const [sid, sim] of this.playerSims.entries()) {
-      const st = this.state.players.get(sid);
-      if (!st || st.dead) continue;
-      if (!sim || !sim.body) continue;
-
-      // Compute player's body AABB in pixels (so any "touch" counts, not just center-point).
-      let minX = Infinity;
-      let minY = Infinity;
-      let maxX = -Infinity;
-      let maxY = -Infinity;
-
-      for (let f = sim.body.getFixtureList(); f; f = f.getNext()) {
-        let aabb = null;
-        try {
-          aabb = f.getAABB(0);
-        } catch (e) {
-          aabb = null;
-        }
-
-        if (!aabb || !aabb.lowerBound || !aabb.upperBound) continue;
-
-        minX = Math.min(minX, aabb.lowerBound.x * PPM);
-        minY = Math.min(minY, aabb.lowerBound.y * PPM);
-        maxX = Math.max(maxX, aabb.upperBound.x * PPM);
-        maxY = Math.max(maxY, aabb.upperBound.y * PPM);
-      }
-
-      // Fallback: if AABB couldn't be read, use body center point.
-      if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
-        const p = sim.body.getPosition();
-        const px = p.x * PPM;
-        const py = p.y * PPM;
-
-        for (const r of this.killZoneRects) {
-          if (!r) continue;
-          if (!pointInRect(px, py, r)) continue;
-
-          this.killPlayer(sid, { source: "killzone" });
-          break;
-        }
-
-        continue;
-      }
-
-      const playerRect = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
-
-      for (const r of this.killZoneRects) {
-        if (!r) continue;
-        if (!rectsOverlap(playerRect, r)) continue;
-
-        // Die exactly like being shot (ragdoll + respawn).
-        this.killPlayer(sid, { source: "killzone" });
-        break;
-      }
-    }
-  }
-
   updatePlayerCheckpoints() {
     if (!Array.isArray(this.checkpointTriggers) || this.checkpointTriggers.length === 0) return;
 
@@ -653,9 +576,6 @@ export default class LobbyRoom extends Room {
 
     // 2) physics step
     this.world.step(FIXED_DT);
-
-    // 2.25) kill zones (after physics step)
-    this.updateKillZones();
 
     // 2.5) apply damage events
     for (const e of allEvents) {
