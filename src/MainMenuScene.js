@@ -2,8 +2,11 @@ import Phaser from "phaser";
 
 /**
  * MainMenuScene
- * - No server connection happens here.
- * - Player clicks START -> MatchmakingScene
+ * - Click START -> MatchmakingScene
+ *
+ * IMPORTANT FIX:
+ * - Phaser reuses the same scene instance
+ * - So we reset this._starting at the start of create()
  */
 export default class MainMenuScene extends Phaser.Scene {
   constructor() {
@@ -16,6 +19,9 @@ export default class MainMenuScene extends Phaser.Scene {
   }
 
   create() {
+    // ✅ FIX: reset every time scene starts
+    this._starting = false;
+
     this.cameras.main.setBackgroundColor("#1d1f27");
 
     this._titleText = this.add

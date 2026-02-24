@@ -4,7 +4,7 @@ import MatchmakingScene from "./MatchmakingScene.js";
 import GameScene from "./GameScene.js";
 
 // Start in MainMenuScene.
-// START -> MatchmakingScene (queue UI) -> GameScene (actual match)
+// START -> MatchmakingScene -> GameScene
 new Phaser.Game({
   type: Phaser.AUTO,
   parent: "app",

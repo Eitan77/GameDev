@@ -1,19 +1,11 @@
 import Phaser from "phaser";
 import { Client } from "@colyseus/sdk";
 
-// same host as the website (works on LAN if site is hosted on your PC)
 const COLYSEUS_URL = `${window.location.protocol}//${window.location.hostname}:2567`;
 
 const MATCHMAKING_ROOM = "matchmaking";
 const MATCH_SIZE = 4;
 
-/**
- * MatchmakingScene
- * - Joins matchmaking queue
- * - Shows: "In que X/4"
- * - Shows 4 slots filling as players are found
- * - When matchFound arrives, starts GameScene with seat reservation
- */
 export default class MatchmakingScene extends Phaser.Scene {
   constructor() {
     super("MatchmakingScene");
@@ -25,7 +17,7 @@ export default class MatchmakingScene extends Phaser.Scene {
     this.queueText = null;
     this.subText = null;
 
-    this.slots = []; // { box, text }
+    this.slots = [];
 
     this.cancelBtn = null;
     this.cancelText = null;
@@ -35,6 +27,10 @@ export default class MatchmakingScene extends Phaser.Scene {
   }
 
   create() {
+    // ✅ FIX: reset every time scene starts
+    this._starting = false;
+    this._handedOff = false;
+
     this.cameras.main.setBackgroundColor("#12131a");
 
     this.titleText = this.add
@@ -66,6 +62,7 @@ export default class MatchmakingScene extends Phaser.Scene {
     const slotH = 56;
     const gap = 16;
 
+    this.slots = [];
     for (let i = 0; i < MATCH_SIZE; i++) {
       const box = this.add.rectangle(0, 0, slotW, slotH, 0x2d3342, 1);
       box.setStrokeStyle(3, 0xffffff, 0.22);
@@ -78,7 +75,7 @@ export default class MatchmakingScene extends Phaser.Scene {
         })
         .setOrigin(0.5);
 
-      this.slots.push({ box, text: label, i });
+      this.slots.push({ box, text: label });
     }
 
     // Cancel button
@@ -117,7 +114,6 @@ export default class MatchmakingScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.cleanup());
     this.events.once(Phaser.Scenes.Events.DESTROY, () => this.cleanup());
 
-    // Start matchmaking
     this.connectToMatchmaking().catch((err) => {
       console.error("Matchmaking connection failed:", err);
       this.queueText?.setText("Server offline");
@@ -152,16 +148,11 @@ export default class MatchmakingScene extends Phaser.Scene {
     const f = Math.max(0, Math.min(MATCH_SIZE, Number(found) || 0));
     const missing = MATCH_SIZE - f;
 
-    // ✅ EXACT TEXT YOU ASKED FOR:
     this.queueText?.setText(`In que ${f}/${MATCH_SIZE}`);
 
-    if (missing <= 0) {
-      this.subText?.setText("Match found! Starting...");
-    } else if (missing === 1) {
-      this.subText?.setText("Waiting for 1 more player...");
-    } else {
-      this.subText?.setText(`Waiting for ${missing} more players...`);
-    }
+    if (missing <= 0) this.subText?.setText("Match found! Starting...");
+    else if (missing === 1) this.subText?.setText("Waiting for 1 more player...");
+    else this.subText?.setText(`Waiting for ${missing} more players...`);
   }
 
   _setSlots(found) {
@@ -169,7 +160,6 @@ export default class MatchmakingScene extends Phaser.Scene {
 
     for (let i = 0; i < MATCH_SIZE; i++) {
       const slot = this.slots[i];
-      if (!slot) continue;
 
       if (i === 0 && f >= 1) {
         slot.text.setText("Player 1: You");
@@ -189,28 +179,21 @@ export default class MatchmakingScene extends Phaser.Scene {
 
   async connectToMatchmaking() {
     this.client = new Client(COLYSEUS_URL);
-
-    // join the shared queue room
     this.mmRoom = await this.client.joinOrCreate(MATCHMAKING_ROOM);
 
-    // show something immediately
     this._setQueueText(1);
     this._setSlots(1);
 
-    // server sends: { waiting, need }
     this.mmRoom.onMessage("queue", (msg) => {
       if (this._starting) return;
 
       const waiting = Math.max(0, Number(msg?.waiting) || 0);
-
-      // cap at 4 so UI never shows "10/4"
       const found = Math.min(waiting, MATCH_SIZE);
 
       this._setQueueText(found);
       this._setSlots(found);
     });
 
-    // seat reservation arrives when match is ready
     this.mmRoom.onMessage("matchFound", async (reservation) => {
       if (this._starting) return;
       this._starting = true;
@@ -223,14 +206,13 @@ export default class MatchmakingScene extends Phaser.Scene {
       this._setQueueText(MATCH_SIZE);
       this._setSlots(MATCH_SIZE);
 
-      // leave matchmaking room (best effort)
       try {
         await this.mmRoom?.leave();
       } catch (_) {}
 
       this.mmRoom = null;
 
-      // ✅ hand off the same client + reservation to GameScene
+      // hand off the client + reservation to GameScene
       this._handedOff = true;
       this.scene.start("GameScene", { reservation, client: this.client });
     });
@@ -264,6 +246,7 @@ export default class MatchmakingScene extends Phaser.Scene {
     try {
       this.mmRoom?.leave();
     } catch (_) {}
+
     this.mmRoom = null;
     this.client = null;
   }
