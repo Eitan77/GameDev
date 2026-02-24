@@ -3,10 +3,7 @@ import Phaser from "phaser";
 /**
  * MainMenuScene
  * - No server connection happens here.
- * - Player clicks START -> we switch to GameScene, which then connects.
- *
- * For more menus later, just make more Scenes:
- *   SettingsMenuScene, PauseMenuScene, CharacterSelectScene, etc.
+ * - Player clicks START -> MatchmakingScene
  */
 export default class MainMenuScene extends Phaser.Scene {
   constructor() {
@@ -74,8 +71,6 @@ export default class MainMenuScene extends Phaser.Scene {
   }
 
   layout() {
-    // Cameras can be unavailable during an early resize in some builds.
-    // Use camera center when present, otherwise fall back to ScaleManager.
     const cam = this.cameras && this.cameras.main ? this.cameras.main : null;
     const w = this.scale ? this.scale.width : 0;
     const h = this.scale ? this.scale.height : 0;
@@ -92,7 +87,7 @@ export default class MainMenuScene extends Phaser.Scene {
     if (this._starting) return;
     this._starting = true;
 
-    this._statusText?.setText("Connecting...");
-    this.scene.start("GameScene"); // GameScene connects only when it starts
+    this._statusText?.setText("Entering queue...");
+    this.scene.start("MatchmakingScene");
   }
 }

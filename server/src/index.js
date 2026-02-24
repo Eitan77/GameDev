@@ -1,22 +1,29 @@
 // ============================================================
-// index.js (FULL FILE)
-// Minimal Colyseus v0.17 server using defineServer/defineRoom
-// Adds CORS headers so the browser can call /matchmake properly.
+// server/src/index.js
+// Colyseus server (single server on your PC)
+//
+// Rooms:
+//  - "matchmaking" : one shared queue room
+//  - "lobby"       : actual game room instances (4 players each)
 // ============================================================
 
 import { defineServer, defineRoom } from "colyseus";
-import LobbyRoom from "./rooms/LobbyRoom.js";
+import MatchmakingRoom from "./rooms/MatchmakingRoom.js";
+import GameRoom from "./rooms/GameRoom.js";
 
 const PORT = Number(process.env.PORT || 2567);
 
 const server = defineServer({
   rooms: {
-    lobby: defineRoom(LobbyRoom),
+    // ✅ queue room
+    matchmaking: defineRoom(MatchmakingRoom),
+
+    // ✅ actual game instances (each match creates a new one)
+    lobby: defineRoom(GameRoom),
   },
 
-  // Express hook (v0.17) - great place to add CORS + a health endpoint
+  // ✅ Allow browser to hit colyseus endpoints (CORS)
   express: (app) => {
-    // Allow your Vite site (localhost:5173) to call the matchmaker endpoints
     app.use((req, res, next) => {
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");

@@ -1,5 +1,5 @@
 // ============================================================
-// src/GameScene.js
+// GameScene.js
 // CLIENT: render-only.
 // - Server runs physics/collisions.
 // - Client renders sprites, VFX, and plays audio.
@@ -7,6 +7,9 @@
 //
 // ✅ Adds checkpoint markers (no collision) at Tiled "PlayerSpawnPoints"
 //    using image: assets/images/checkpoint.png (key: "checkpoint")
+//
+// ✅ Now starts from MatchmakingScene with a seat reservation:
+//    this.scene.start("GameScene", { reservation, client })
 // ============================================================
 
 import Phaser from "phaser";
@@ -19,7 +22,7 @@ import GunPowerUp from "./GunPowerUp.js";
 import SniperGunPowerUp from "./SniperGunPowerUp.js";
 import { preloadGuns } from "./gunCatalog.js";
 
-// ✅ connects to same host (works on LAN)
+// connects to same host (works on LAN)
 const COLYSEUS_URL = `${window.location.protocol}//${window.location.hostname}:2567`;
 const ROOM_NAME = "lobby";
 
@@ -150,6 +153,9 @@ export default class GameScene extends Phaser.Scene {
     this.client = null;
     this.room = null;
 
+    this._reservation = null;
+    this._clientFromMM = null;
+
     this.map = null;
 
     this.players = new Map();
@@ -157,7 +163,7 @@ export default class GameScene extends Phaser.Scene {
 
     this.powerUps = new Map();
 
-    // ✅ checkpoint marker sprites (no collision)
+    // checkpoint marker sprites (no collision)
     this.checkpointSprites = [];
 
     this.dragActive = false;
@@ -174,11 +180,17 @@ export default class GameScene extends Phaser.Scene {
     this._cleanupRegistered = false;
   }
 
+  init(data) {
+    // comes from MatchmakingScene
+    this._reservation = data?.reservation ?? null;
+    this._clientFromMM = data?.client ?? null;
+  }
+
   preload() {
     this.load.image("player", "assets/images/player.png");
     this.load.image("arm", "assets/images/arm.png");
 
-    // ✅ checkpoint marker image
+    // checkpoint marker image
     this.load.image("checkpoint", "assets/images/checkpoint.png");
 
     GameMap.preload(this);
@@ -192,11 +204,11 @@ export default class GameScene extends Phaser.Scene {
   async create() {
     this.map = new GameMap(this).create();
 
-    // ✅ spawn checkpoint marker images at Tiled respawn points
+    // spawn checkpoint marker images at Tiled respawn points
     this.spawnCheckpointMarkers();
 
     this.statusText = this.add
-      .text(20, 20, "Connecting...", { fontSize: "18px", color: "#ffffff" })
+      .text(20, 20, "Joining match...", { fontSize: "18px", color: "#ffffff" })
       .setScrollFactor(0)
       .setDepth(2000);
 
@@ -207,8 +219,6 @@ export default class GameScene extends Phaser.Scene {
     // Drag input
     this.input.on("pointerdown", (pointer) => {
       if (!this.localPlayer?.sprite) return;
-
-      // ✅ If dead/ragdolling, no dragging
       if (this.localPlayer?.isDead) return;
 
       const wp = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
@@ -231,7 +241,6 @@ export default class GameScene extends Phaser.Scene {
     this.input.on("pointermove", (pointer) => {
       if (!this.dragActive) return;
 
-      // ✅ If we died mid-drag, stop dragging immediately
       if (this.localPlayer?.isDead) {
         this.dragActive = false;
         return;
@@ -246,19 +255,26 @@ export default class GameScene extends Phaser.Scene {
     this.input.on("pointerup", endDrag);
     this.input.on("pointerupoutside", endDrag);
 
-    // Connect
+    // Connect to the actual match room
     try {
-      this.client = new Client(COLYSEUS_URL);
-      this.room = await this.client.joinOrCreate(ROOM_NAME);
+      // reuse client from matchmaking if provided, otherwise create our own
+      this.client = this._clientFromMM || new Client(COLYSEUS_URL);
 
-      // ✅ IMPORTANT: Callbacks is NOT constructed with `new` in your project
+      if (this._reservation) {
+        this.room = await this.client.consumeSeatReservation(this._reservation);
+      } else {
+        // fallback (shouldn't happen in normal flow)
+        this.room = await this.client.joinOrCreate(ROOM_NAME);
+      }
+
+      // IMPORTANT: Callbacks is NOT constructed with `new` in your project
       this.callbacks = Callbacks.get(this.room);
 
       this.statusText.setText(`Connected: ${COLYSEUS_URL}`);
 
       this.registerCleanup();
     } catch (e) {
-      console.error("Failed to connect to Colyseus:", e);
+      console.error("Failed to join game room:", e);
       this.statusText.setText(`Server offline at ${COLYSEUS_URL}`);
       return;
     }
@@ -270,7 +286,7 @@ export default class GameScene extends Phaser.Scene {
     this.callbacks.onAdd("players", (playerState, sessionId) => {
       const isLocal = sessionId === this.room.sessionId;
 
-      // ✅ prevent duplicate sprites (ghost look)
+      // prevent duplicate sprites (ghost look)
       const existing = this.players.get(sessionId);
       if (existing) {
         existing.destroy();
@@ -285,7 +301,7 @@ export default class GameScene extends Phaser.Scene {
       if (isLocal) {
         this.localPlayer = p;
 
-        // ✅ follow the ACTUAL player sprite (no custom follow-point)
+        // follow the ACTUAL player sprite
         this.cameras.main.startFollow(
           p.sprite,
           CAMERA_ROUND_PIXELS,
@@ -304,7 +320,6 @@ export default class GameScene extends Phaser.Scene {
       } else {
         const refresh = () => p.setTargetFromState(playerState);
 
-        // ✅ include "dead" in the listened fields
         [
           "x","y","a",
           "armX","armY","armA",
@@ -376,10 +391,8 @@ export default class GameScene extends Phaser.Scene {
     });
   }
 
-  // ✅ Simple: create an image at each Tiled point in "PlayerSpawnPoints"
-  // No physics body is created => no collision.
+  // create an image at each Tiled point in "PlayerSpawnPoints" (no collision)
   spawnCheckpointMarkers() {
-    // clear old markers if scene restarts
     for (const s of this.checkpointSprites) {
       try { s.destroy(); } catch (_) {}
     }
@@ -396,12 +409,8 @@ export default class GameScene extends Phaser.Scene {
       const y = Number(o?.y);
       if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
 
-      const img = this.add.image(x, y+232, "checkpoint");
-
-      // Usually you want the bottom of the sprite to sit on the point
+      const img = this.add.image(x, y + 232, "checkpoint");
       img.setOrigin(0.5, 1);
-
-      // Put behind players
       img.setDepth(1);
 
       this.checkpointSprites.push(img);
@@ -458,7 +467,6 @@ export default class GameScene extends Phaser.Scene {
     }
     this.powerUps.clear();
 
-    // ✅ destroy checkpoint markers
     for (const s of this.checkpointSprites) {
       try { s.destroy(); } catch (_) {}
     }
@@ -466,8 +474,12 @@ export default class GameScene extends Phaser.Scene {
 
     try { this.room?.leave(); } catch (_) {}
     this.room = null;
+
     this.client = null;
     this.callbacks = null;
+
+    this._reservation = null;
+    this._clientFromMM = null;
   }
 
   sendInput(deltaSec) {
@@ -478,10 +490,7 @@ export default class GameScene extends Phaser.Scene {
     if (this.netAcc < step) return;
     this.netAcc = 0;
 
-    // ✅ dead players can't control anything
     const localDead = !!this.localPlayer?.isDead;
-
-    // if dead, cancel dragging
     if (localDead) this.dragActive = false;
 
     const tiltLeft = localDead ? false : !!this.keyTiltLeft?.isDown;
