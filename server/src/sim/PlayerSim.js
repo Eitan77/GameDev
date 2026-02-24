@@ -2,9 +2,13 @@
 // server/src/sim/PlayerSim.js
 // Server-side Planck simulation for one player.
 //
-// ✅ MOVEMENT PRESERVED (tilt/jump/balance/ground rays unchanged)
-// ✅ Adds: dead ragdoll mode + death-only knockback support
-// ✅ Adds: safe guard so missing updateAutoAim() won't crash server
+// FIXES:
+// ✅ Tilting can still slide naturally (keeps vx while tilting)
+// ✅ Removes occasional sideways snap when switching far-left -> far-right tilt
+//    by rocking about a continuous contact point along the foot bottom
+//    + smoothing corner ray flicker with a short grace timer.
+// ✅ Removes "weird rotation" right after jumping by suppressing in-air
+//    balance torque for a brief moment after jump.
 // ============================================================
 
 import planck from "planck";
@@ -55,6 +59,12 @@ const GROUND_RAY_X_OFFSETS_PX = [-FOOT_HALF_W_PX, 0, FOOT_HALF_W_PX];
 const GROUND_RAY_START_INSET_PX = 2;
 const GROUND_RAY_LEN_PX = 10;
 const GROUND_GRACE_TIME_SEC = 0.06;
+
+// ✅ Corner ray flicker smoothing (movement)
+const CORNER_GRACE_TIME_SEC = 0.06;
+
+// ✅ Prevent weird mid-air rotation right after a jump
+const JUMP_STABILIZE_TIME_SEC = 0.10;
 
 const CORNER_RAY_X_INSET_PX = 1;
 
@@ -136,6 +146,14 @@ export default class PlayerSim {
     this.holdPastMaxActive = false;
     this.holdPastMaxAngleRad = 0;
 
+    // ✅ movement smoothing
+    this.leftCornerGrace = 0;
+    this.rightCornerGrace = 0;
+
+    // ✅ short timer after a jump where we suppress in-air auto-balance torque
+    // (removes the "weird rotation" right after jumping)
+    this.justJumpedTimer = 0;
+
     this.isDragging = false;
     this.mouseJoint = null;
 
@@ -177,6 +195,10 @@ export default class PlayerSim {
       this.holdPastMaxActive = false;
       this.holdPastMaxAngleRad = 0;
 
+      this.leftCornerGrace = 0;
+      this.rightCornerGrace = 0;
+      this.justJumpedTimer = 0;
+
       // give a small topple so it actually falls limp
       const s = stableSignFromString(this.sessionId);
       this.body.setAwake(true);
@@ -191,9 +213,6 @@ export default class PlayerSim {
   }
 
   // ✅ Apply knockback ONLY when dying (called by LobbyRoom on kill)
-  // dirX/dirY should be a unit-ish direction (we normalize anyway)
-  // strengthPxPerSec is easy to tune per gun (px/sec)
-  // upPxPerSec adds extra upward kick (px/sec). Up is negative Y.
   applyDeathKnockback(dirX, dirY, strengthPxPerSec, upPxPerSec = 0) {
     if (!this.body) return;
 
@@ -391,6 +410,10 @@ export default class PlayerSim {
     this.holdPastMaxActive = false;
     this.holdPastMaxAngleRad = 0;
 
+    this.leftCornerGrace = 0;
+    this.rightCornerGrace = 0;
+    this.justJumpedTimer = 0;
+
     this.groundGraceTimer = 0;
     this.touchingGround = false;
 
@@ -570,7 +593,7 @@ export default class PlayerSim {
   }
 
   // --------------------------
-  // Ground rays (UNCHANGED)
+  // Ground rays
   // --------------------------
   computeGroundedByRays() {
     const rayLenM = this.pxToM(GROUND_RAY_LEN_PX);
@@ -630,6 +653,8 @@ export default class PlayerSim {
   }
 
   choosePivotCorner(tiltDir, cornerHits, angleNow, angleTarget) {
+    // kept (not used in the new rocking method), but left here in case
+    // other code still expects it
     let pivotSide = 0;
 
     if (cornerHits.leftHit && !cornerHits.rightHit) pivotSide = -1;
@@ -651,20 +676,51 @@ export default class PlayerSim {
     return pivotSide;
   }
 
-  applyTiltPinnedToFootCorner(pivotSide, angleTarget) {
+  // ------------------------------------------------------------
+  // Tilt contact / rocking
+  //
+  // Goal:
+  // - Allow natural sliding (keep vx), but remove the occasional *extra* horizontal
+  //   shift that happens when switching from far-left tilt to far-right tilt.
+  //
+  // How:
+  // - Instead of always pivoting around a single toe corner that can switch abruptly,
+  //   we pivot around a *contact point on the bottom of the foot*.
+  // - When BOTH corners are grounded (flat ground), that contact point moves
+  //   smoothly between toes based on the current angle (rolling contact).
+  // - When only one corner is grounded, we clamp to that toe.
+  // ------------------------------------------------------------
+  _contactLocalXForAngleM(angleRad, leftGrounded, rightGrounded) {
+    const halfWm = this.pxToM(FOOT_HALF_W_PX);
+
+    if (leftGrounded && !rightGrounded) return -halfWm;
+    if (rightGrounded && !leftGrounded) return +halfWm;
+
+    if (leftGrounded && rightGrounded) {
+      const nx = clamp(angleRad / TILT_MAX_ANGLE_RAD, -1, +1);
+      return nx * halfWm;
+    }
+
+    // airborne / unknown: rotate around center
+    return 0;
+  }
+
+  applyTiltPinnedToFootContact(angleNow, angleTarget, leftGrounded, rightGrounded) {
     this.body.setAwake(true);
 
+    const localY = this.playerBottomLocalYm;
+
+    const localXNow = this._contactLocalXForAngleM(angleNow, leftGrounded, rightGrounded);
+    const localXTarget = this._contactLocalXForAngleM(angleTarget, leftGrounded, rightGrounded);
+
+    // world anchor is the CURRENT contact point (prevents sudden "snap" when reversing)
+    const anchorWorld = this.body.getWorldPoint(Vec2(localXNow, localY));
+
+    // new body position that keeps the anchor fixed while angle changes
+    const rotatedTarget = rotateXY(localXTarget, localY, angleTarget);
+    const posPerfect = Vec2(anchorWorld.x - rotatedTarget.x, anchorWorld.y - rotatedTarget.y);
+
     const posNow = this.body.getPosition();
-
-    const pivotLocalX = pivotSide * this.pxToM(FOOT_HALF_W_PX);
-    const pivotLocalY = this.playerBottomLocalYm;
-
-    const pivotLocal = Vec2(pivotLocalX, pivotLocalY);
-    const pivotWorld = this.body.getWorldPoint(pivotLocal);
-
-    const rotatedPivot = rotateXY(pivotLocalX, pivotLocalY, angleTarget);
-    const posPerfect = Vec2(pivotWorld.x - rotatedPivot.x, pivotWorld.y - rotatedPivot.y);
-
     const a = clamp(TILT_PIVOT_FOLLOW, 0, 1);
     const posNew = Vec2(
       posNow.x + (posPerfect.x - posNow.x) * a,
@@ -674,8 +730,22 @@ export default class PlayerSim {
     this.body.setTransform(posNew, angleTarget);
     this.body.setAngularVelocity(0);
 
+    // ✅ Allow sliding while tilting: keep horizontal velocity.
+    // Kill vertical while grounded to avoid jitter from setTransform.
     const v = this.body.getLinearVelocity();
     this.body.setLinearVelocity(Vec2(v.x, 0));
+
+    // keep a notion of which "side" we're leaning to
+    if (Math.abs(localXTarget) > 1e-6) this.activePivotSide = localXTarget > 0 ? +1 : -1;
+    else this.activePivotSide = angleTarget >= 0 ? +1 : -1;
+  }
+
+  // Backwards-compatible helper (used by older code paths)
+  applyTiltPinnedToFootCorner(pivotSide, angleTarget) {
+    const angleNow = wrapRadPi(this.body.getAngle());
+    const leftGrounded = pivotSide < 0;
+    const rightGrounded = pivotSide > 0;
+    this.applyTiltPinnedToFootContact(angleNow, angleTarget, leftGrounded, rightGrounded);
   }
 
   doTiltReleaseJump() {
@@ -694,11 +764,14 @@ export default class PlayerSim {
     this.groundGraceTimer = 0;
     this.touchingGround = false;
 
+    // ✅ suppress in-air auto-balance torque right after jumping
+    this.justJumpedTimer = JUMP_STABILIZE_TIME_SEC;
+
     return true;
   }
 
   // --------------------------
-  // Guns (unchanged except death-knockback fields in damage event)
+  // Guns
   // --------------------------
   hasGun() { return !!this.gunId; }
 
@@ -851,21 +924,16 @@ export default class PlayerSim {
     return { endPx: hitEndPx, hitSessionId: bestHitSessionId };
   }
 
-  raycastBeamEndPx(startPx, dirUnit, maxDistPx) {
-    return this.raycastBeamHitPx(startPx, dirUnit, maxDistPx).endPx;
-  }
-
   // Called by LobbyRoom each tick BEFORE world.step
   applyInput(input, fixedDt) {
     // ✅ If dead: no movement forces, no tilt/jump, no auto-aim, no firing.
-    // (Physics still runs, so it ragdolls naturally.)
     if (this.dead) {
       this.endMouseDrag();
       this.lastFireSeq = Number(input?.fireSeq) | 0;
       return [];
     }
 
-    // facing from input (UNCHANGED)
+    // facing from input
     if (input) {
       const leftDown = !!input.tiltLeft;
       const rightDown = !!input.tiltRight;
@@ -879,23 +947,25 @@ export default class PlayerSim {
       }
     }
 
-    // ground grace (UNCHANGED)
+    // ground grace
     const rawGrounded = this.computeGroundedByRays();
     if (rawGrounded) this.groundGraceTimer = GROUND_GRACE_TIME_SEC;
     else this.groundGraceTimer = Math.max(0, this.groundGraceTimer - fixedDt);
     this.touchingGround = this.groundGraceTimer > 0;
 
-    // dragging disables tilt/balance (UNCHANGED)
+    // ✅ decay jump-stabilize timer
+    this.justJumpedTimer = Math.max(0, this.justJumpedTimer - fixedDt);
+
+    // dragging disables tilt/balance
     this.updateMouseDrag(input);
 
-    // ✅ Guard to prevent "this.updateAutoAim is not a function" crashes
     if (typeof this.updateAutoAim === "function") {
       this.updateAutoAim(fixedDt);
     }
 
     const events = [];
 
-    // fireSeq -> authoritative shot trigger (UNCHANGED, except extra knockback fields)
+    // fireSeq -> authoritative shot trigger
     const fireSeq = Number(input?.fireSeq) | 0;
     if (fireSeq !== this.lastFireSeq) {
       this.lastFireSeq = fireSeq;
@@ -932,32 +1002,10 @@ export default class PlayerSim {
               amount: dmg,
               from: this.sessionId,
               gunId: this.gunId,
-
-              // ✅ death-only knockback info
-              // LobbyRoom applies these ONLY if this hit actually kills.
               kx: dir.x,
               ky: dir.y,
               kb: Number(def.deathKnockbackPxPerSec ?? 0),
               kbu: Number(def.deathKnockbackUpPxPerSec ?? 0),
-            });
-          }
-
-          if (def.fireSoundKey) {
-            events.push({
-              kind: "sound",
-              key: def.fireSoundKey,
-              volume: Number(def.fireSoundVolume ?? 1),
-              rate: Number(def.fireSoundRate ?? 1),
-            });
-          }
-
-          if (this.ammo > 0 && def.reloadSoundKey) {
-            events.push({
-              kind: "soundDelayed",
-              delaySec: Number(def.fireToReloadDelaySec ?? 0),
-              key: def.reloadSoundKey,
-              volume: Number(def.reloadSoundVolume ?? 1),
-              rate: Number(def.reloadSoundRate ?? 1),
             });
           }
         }
@@ -968,11 +1016,13 @@ export default class PlayerSim {
       }
     }
 
-    // everything below is MOVEMENT (UNCHANGED)
+    // MOVEMENT
     if (this.isDragging) {
       this.prevTiltDir = 0;
       this.activePivotSide = 0;
       this.holdPastMaxActive = false;
+      this.leftCornerGrace = 0;
+      this.rightCornerGrace = 0;
       return events;
     }
 
@@ -988,14 +1038,19 @@ export default class PlayerSim {
       this.prevTiltDir = 0;
       this.activePivotSide = 0;
       this.holdPastMaxActive = false;
+      this.leftCornerGrace = 0;
+      this.rightCornerGrace = 0;
     }
 
+    // Release tilt -> jump
     if (tiltAllowedNow && this.prevTiltDir !== 0 && tiltDir === 0) {
       const didJump = this.doTiltReleaseJump();
 
       this.prevTiltDir = 0;
       this.activePivotSide = 0;
       this.holdPastMaxActive = false;
+      this.leftCornerGrace = 0;
+      this.rightCornerGrace = 0;
 
       if (didJump) return events;
     }
@@ -1024,18 +1079,37 @@ export default class PlayerSim {
       }
 
       const cornerHits = this.computeFootCornerGroundedByRays();
-      const pivotSide = this.choosePivotCorner(tiltDir, cornerHits, angleNow, angleTarget);
 
-      this.activePivotSide = pivotSide;
-      this.applyTiltPinnedToFootCorner(pivotSide, angleTarget);
+      // ✅ Smooth corner contact to avoid one-frame flicker causing pivot snaps
+      if (cornerHits.leftHit) this.leftCornerGrace = CORNER_GRACE_TIME_SEC;
+      else this.leftCornerGrace = Math.max(0, this.leftCornerGrace - fixedDt);
+
+      if (cornerHits.rightHit) this.rightCornerGrace = CORNER_GRACE_TIME_SEC;
+      else this.rightCornerGrace = Math.max(0, this.rightCornerGrace - fixedDt);
+
+      const leftGrounded = this.leftCornerGrace > 0;
+      const rightGrounded = this.rightCornerGrace > 0;
+
+      // ✅ Rock around a continuous contact point on the foot bottom (no sideways snap)
+      this.applyTiltPinnedToFootContact(angleNow, angleTarget, leftGrounded, rightGrounded);
 
       this.prevTiltDir = tiltDir;
       return events;
     }
 
+    // No tilt -> balance
     this.prevTiltDir = 0;
     this.activePivotSide = 0;
     this.holdPastMaxActive = false;
+    this.leftCornerGrace = 0;
+    this.rightCornerGrace = 0;
+
+    // ✅ Prevent the "weird rotation" right after jumping:
+    // while airborne for a brief moment after jump, do not apply balance torque.
+    if (this.justJumpedTimer > 0 && !this.touchingGround) {
+      this.body.setAngularVelocity(0);
+      return events;
+    }
 
     const balanceTargetRad = (BALANCE_TARGET_ANGLE_DEG * Math.PI) / 180;
     const strengthMult = this.touchingGround ? 1.0 : AIR_BALANCE_MULT;
