@@ -3,14 +3,18 @@
 //
 // One shared queue room.
 // - Players join this first.
-// - Broadcasts "queue" counts so client can show: In que X/4
-// - When 4 players are waiting, create a NEW "lobby" instance
-//   and send seat reservations to those 4 players.
+// - Broadcasts "queue" counts so client can show: In que X/N
+// - When N players are waiting, create a NEW "lobby" instance
+//   and send seat reservations to those N players.
+//
+// TEMP TESTING MODE:
+//   MATCH_SIZE = 1  (start match as soon as 1 player joins)
+//   Change back to 4 when done testing.
 // ============================================================
 
 import { Room, matchMaker } from "colyseus";
 
-const MATCH_SIZE = 4;
+const MATCH_SIZE = 1; // <-- TEMP: 1-player match start for testing
 
 export default class MatchmakingRoom extends Room {
   onCreate() {
@@ -35,10 +39,10 @@ export default class MatchmakingRoom extends Room {
   onJoin(client) {
     this.waiting.push(client);
 
-    // ✅ tell everyone how many are waiting
+    // tell everyone how many are waiting
     this._broadcastQueue();
 
-    // ✅ see if we can start a match
+    // see if we can start a match
     this._tryMakeMatch();
   }
 
@@ -72,7 +76,9 @@ export default class MatchmakingRoom extends Room {
     const roomId =
       typeof created === "string"
         ? created
-        : (created && typeof created.roomId === "string" ? created.roomId : null);
+        : created && typeof created.roomId === "string"
+          ? created.roomId
+          : null;
 
     if (!roomId) throw new Error("matchMaker.createRoom did not return a roomId");
 
@@ -84,7 +90,7 @@ export default class MatchmakingRoom extends Room {
     // We try the safest path first.
     try {
       return await matchMaker.reserveSeatFor(roomId, options);
-    } catch (e1) {
+    } catch (_e1) {
       // fallback
       return await matchMaker.reserveSeatFor(roomIdOrRef, options);
     }
@@ -96,7 +102,7 @@ export default class MatchmakingRoom extends Room {
 
     try {
       while (this.waiting.length >= MATCH_SIZE) {
-        // take the next 4 players
+        // take the next N players
         const group = this.waiting.splice(0, MATCH_SIZE);
 
         // if any are missing sessionId, requeue the valid ones and stop

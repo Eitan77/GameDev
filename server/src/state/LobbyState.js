@@ -11,8 +11,6 @@ export default class LobbyState extends Schema {
 
     // ------------------------------------------------------------
     // Round timer (server authoritative)
-    // - roundDurationSec: constant duration for this match (ex: 120)
-    // - roundTimeLeftSec: seconds remaining (counts down to 0)
     // ------------------------------------------------------------
     this.roundDurationSec = 0;
     this.roundTimeLeftSec = 0;

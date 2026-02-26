@@ -4,7 +4,11 @@ import { Client } from "@colyseus/sdk";
 const COLYSEUS_URL = `${window.location.protocol}//${window.location.hostname}:2567`;
 
 const MATCHMAKING_ROOM = "matchmaking";
-const MATCH_SIZE = 4;
+
+// TEMP TESTING MODE:
+//   MATCH_SIZE = 1  (start match as soon as 1 player joins)
+//   Change back to 4 when done testing.
+const MATCH_SIZE = 1;
 
 export default class MatchmakingScene extends Phaser.Scene {
   constructor() {
@@ -25,11 +29,12 @@ export default class MatchmakingScene extends Phaser.Scene {
     this._starting = false;
     this._handedOff = false;
 
+    // safe resize handler storage (prevents calling layout after scene is destroyed)
     this._onResize = null;
   }
 
   create() {
-    // ✅ reset every time scene starts
+    // reset every time scene starts
     this._starting = false;
     this._handedOff = false;
 
@@ -44,7 +49,7 @@ export default class MatchmakingScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     this.queueText = this.add
-      .text(0, 0, "In que 1/4", {
+      .text(0, 0, `In que 1/${MATCH_SIZE}`, {
         fontFamily: "Arial, sans-serif",
         fontSize: "36px",
         color: "#cfd6ff",
@@ -52,14 +57,14 @@ export default class MatchmakingScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     this.subText = this.add
-      .text(0, 0, "Waiting for 3 more players...", {
+      .text(0, 0, MATCH_SIZE === 1 ? "Starting as soon as you join..." : "Waiting for players...", {
         fontFamily: "Arial, sans-serif",
         fontSize: "18px",
         color: "#aab3ff",
       })
       .setOrigin(0.5);
 
-    // 4 slot cards
+    // slot cards (now 1 for testing)
     const slotW = 520;
     const slotH = 56;
     const gap = 16;
@@ -112,7 +117,7 @@ export default class MatchmakingScene extends Phaser.Scene {
 
     this.layout();
 
-    // ✅ store resize callback so we can remove it (prevents centerX undefined after scene switch)
+    // IMPORTANT: store resize handler so we can remove it in cleanup()
     this._onResize = () => this.layout();
     this.scale.on("resize", this._onResize);
 
@@ -247,7 +252,7 @@ export default class MatchmakingScene extends Phaser.Scene {
   }
 
   cleanup() {
-    // ✅ ALWAYS remove resize handler (even if handed off), prevents post-destroy callbacks
+    // remove resize handler safely
     if (this._onResize && this.scale) {
       this.scale.off("resize", this._onResize);
     }
