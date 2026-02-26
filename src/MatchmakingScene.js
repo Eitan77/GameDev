@@ -24,10 +24,12 @@ export default class MatchmakingScene extends Phaser.Scene {
 
     this._starting = false;
     this._handedOff = false;
+
+    this._onResize = null;
   }
 
   create() {
-    // ✅ FIX: reset every time scene starts
+    // ✅ reset every time scene starts
     this._starting = false;
     this._handedOff = false;
 
@@ -109,7 +111,10 @@ export default class MatchmakingScene extends Phaser.Scene {
     this.cancelBtn.on("pointerdown", () => this.cancelMatchmaking());
 
     this.layout();
-    this.scale.on("resize", () => this.layout());
+
+    // ✅ store resize callback so we can remove it (prevents centerX undefined after scene switch)
+    this._onResize = () => this.layout();
+    this.scale.on("resize", this._onResize);
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.cleanup());
     this.events.once(Phaser.Scenes.Events.DESTROY, () => this.cleanup());
@@ -123,7 +128,9 @@ export default class MatchmakingScene extends Phaser.Scene {
   }
 
   layout() {
-    const cam = this.cameras.main;
+    const cam = this.cameras?.main;
+    if (!cam) return;
+
     const cx = cam.centerX;
     const cy = cam.centerY;
 
@@ -240,6 +247,12 @@ export default class MatchmakingScene extends Phaser.Scene {
   }
 
   cleanup() {
+    // ✅ ALWAYS remove resize handler (even if handed off), prevents post-destroy callbacks
+    if (this._onResize && this.scale) {
+      this.scale.off("resize", this._onResize);
+    }
+    this._onResize = null;
+
     // If we handed off to GameScene, DON'T close the client here.
     if (this._handedOff) return;
 

@@ -3,8 +3,8 @@
 // CLIENT: Render-only player (server authoritative physics).
 //
 // ✅ No interpolation: snap to latest server snapshot.
-// ✅ Adds death visuals:
-//    - When dead: tint + fade, hide health bar
+// ✅ Death visuals: tint + fade, hide health bar
+// ✅ Local player's health is rendered in UIScene (HUD overlay)
 // ============================================================
 
 import Phaser from "phaser";
@@ -26,7 +26,7 @@ const GUN_ALONG_ARM_OFFSET_PX = 0;
 const GUN_SIDE_OFFSET_PX = 0;
 
 // ------------------------------------------------------------
-// Health bar (customizable)
+// Health bar (style preserved)
 // ------------------------------------------------------------
 const HEALTH_BAR_W_PX = 70;
 const HEALTH_BAR_H_PX = 10;
@@ -41,6 +41,13 @@ const HEALTH_BAR_BG_ALPHA = 0.85;
 
 const HEALTH_BAR_FILL_COLOR = 0x00ff00;
 const HEALTH_BAR_FILL_ALPHA = 0.95;
+
+// ------------------------------------------------------------
+// HUD placement (local player only)  (not used anymore, but safe to keep)
+// ------------------------------------------------------------
+const HUD_MARGIN_X_PX = 24;
+const HUD_MARGIN_Y_PX = 24;
+const HUD_DEPTH = 2001; // above most things (GameScene statusText is 2000)
 
 // ------------------------------------------------------------
 // Dead visuals
@@ -102,10 +109,17 @@ export default class Player {
     this.health = 100;
 
     // ------------------------
-    // health bar graphics
+    // health bar graphics (same style as before)
     // ------------------------
     const plate = this.scene.add
-      .rectangle(0, 0, HEALTH_BAR_W_PX + 2, HEALTH_BAR_H_PX + 2, HEALTH_BAR_BORDER_COLOR, HEALTH_BAR_BORDER_ALPHA)
+      .rectangle(
+        0,
+        0,
+        HEALTH_BAR_W_PX + 2,
+        HEALTH_BAR_H_PX + 2,
+        HEALTH_BAR_BORDER_COLOR,
+        HEALTH_BAR_BORDER_ALPHA
+      )
       .setOrigin(0.5, 0.5);
 
     const bg = this.scene.add
@@ -113,11 +127,23 @@ export default class Player {
       .setOrigin(0.5, 0.5);
 
     this.healthFill = this.scene.add
-      .rectangle(-HEALTH_BAR_W_PX / 2, 0, HEALTH_BAR_W_PX, HEALTH_BAR_H_PX, HEALTH_BAR_FILL_COLOR, HEALTH_BAR_FILL_ALPHA)
+      .rectangle(
+        -HEALTH_BAR_W_PX / 2,
+        0,
+        HEALTH_BAR_W_PX,
+        HEALTH_BAR_H_PX,
+        HEALTH_BAR_FILL_COLOR,
+        HEALTH_BAR_FILL_ALPHA
+      )
       .setOrigin(0, 0.5);
 
     this.healthBar = this.scene.add.container(0, 0, [plate, bg, this.healthFill]);
-    this.healthBar.setDepth(50);
+
+    // Local = HUD depth, others = world depth
+    this.healthBar.setDepth(this.isLocal ? HUD_DEPTH : 50);
+
+    // Local player health is rendered in the HUD overlay (UIScene), so hide this.
+    if (this.isLocal) this.healthBar.setVisible(false);
 
     // apply initial visuals
     this.applyDeadVisuals();
@@ -167,7 +193,8 @@ export default class Player {
         this.gunSprite.setAlpha(1);
       }
 
-      if (this.healthBar) this.healthBar.setVisible(true);
+      // Local player health is rendered in the HUD overlay (UIScene)
+      if (this.healthBar) this.healthBar.setVisible(!this.isLocal);
     }
   }
 
@@ -183,41 +210,41 @@ export default class Player {
     const armY = Number(s.armY) || y;
     const armA = Number(s.armA) || a;
 
-    const dir = (s.dir === 1 || s.dir === -1) ? s.dir : this.facingDir;
+    const dir = s.dir === 1 || s.dir === -1 ? s.dir : this.facingDir;
 
-    const gunId = (typeof s.gunId === "string") ? s.gunId : "";
+    const gunId = typeof s.gunId === "string" ? s.gunId : "";
     const ammo = Number(s.ammo) || 0;
 
     const maxHealth = Number(s.maxHealth) || this.maxHealth || 100;
     const health = Number(s.health);
     const safeHealth = Number.isFinite(health) ? health : this.health;
 
-    // ✅ dead flag from server (fallback: health <= 0)
-    const dead = (typeof s.dead === "boolean") ? s.dead : (safeHealth <= 0);
+    // dead flag from server (fallback: health <= 0)
+    const dead = typeof s.dead === "boolean" ? s.dead : safeHealth <= 0;
 
-    // store target snapshot
     this.target = {
-      x, y, a,
-      armX, armY, armA,
+      x,
+      y,
+      a,
+      armX,
+      armY,
+      armA,
       dir,
-      gunId, ammo,
+      gunId,
+      ammo,
       maxHealth,
       health: safeHealth,
       dead,
     };
 
-    // update health
     this.maxHealth = maxHealth;
     this.health = safeHealth;
 
-    // update death
     this.isDead = dead;
 
-    // facing update
     this.facingDir = dir;
     this.applyFacingToSprites();
 
-    // gun change detection
     if (gunId !== this._gunId) {
       this._gunId = gunId;
       this._ammo = ammo;
@@ -226,7 +253,6 @@ export default class Player {
       this._ammo = ammo;
     }
 
-    // update visuals (dead/alive)
     this.applyDeadVisuals();
   }
 
@@ -255,7 +281,6 @@ export default class Player {
     this.applyFacingToSprites();
     this.updateGunSpriteTransform();
 
-    // if we are dead, ensure gun is tinted too
     this.applyDeadVisuals();
   }
 
@@ -292,11 +317,9 @@ export default class Player {
     const rightX = Math.cos(a);
     const rightY = Math.sin(a);
 
-    // Hand at bottom of the arm
     const handX = topX + downX * ARM_H_PX;
     const handY = topY + downY * ARM_H_PX;
 
-    // Mirror offsets when flipped
     const flipWith = this.equippedGun.heldFlipWithPlayer !== false;
     const mirrorDir = flipWith && this.gunSprite.flipX ? -1 : +1;
 
@@ -312,12 +335,38 @@ export default class Player {
   }
 
   // ------------------------------------------------------------
+  // Health bar update:
+  // - Remote players: above head (world-space)
+  // - Local player: rendered in UIScene (HUD overlay)
+  // ------------------------------------------------------------
+  updateHealthBar() {
+    if (!this.healthBar || !this.healthFill || this.isDead) return;
+
+    // Local player health is rendered in the HUD overlay (UIScene)
+    if (this.isLocal) return;
+
+    // update fill amount (same behavior)
+    const mh = Math.max(1, Number(this.maxHealth) || 100);
+    const hp = Math.max(0, Math.min(mh, Number(this.health) || 0));
+    const ratio = clamp01(hp / mh);
+
+    this.healthFill.width = HEALTH_BAR_W_PX * ratio;
+    this.healthFill.x = -HEALTH_BAR_W_PX / 2;
+
+    // Remote players: above head
+    const topY = this.sprite.y - PLAYER_H_PX / 2;
+    this.healthBar.setScale(1);
+    this.healthBar.x = this.sprite.x;
+    this.healthBar.y = topY - HEALTH_BAR_OFFSET_FROM_HEAD_PX;
+  }
+
+  // ------------------------------------------------------------
   // Render update (snap to server)
   // ------------------------------------------------------------
   update(_deltaSec) {
     if (!this.target) return;
 
-    // ✅ SNAP: no lerp
+    // SNAP: no lerp
     this.sprite.x = this.target.x;
     this.sprite.y = this.target.y;
     this.sprite.rotation = this.target.a;
@@ -331,21 +380,10 @@ export default class Player {
     this.updateGunSpriteTransform();
 
     // sync dead flag continuously
-    this.isDead = !!this.target.dead || (Number(this.target.health) <= 0);
+    this.isDead = !!this.target.dead || Number(this.target.health) <= 0;
     this.applyDeadVisuals();
 
-    // health bar above head (only when alive)
-    if (this.healthBar && this.healthFill && !this.isDead) {
-      const topY = this.sprite.y - PLAYER_H_PX / 2;
-      this.healthBar.x = this.sprite.x;
-      this.healthBar.y = topY - HEALTH_BAR_OFFSET_FROM_HEAD_PX;
-
-      const mh = Math.max(1, Number(this.maxHealth) || 100);
-      const hp = Math.max(0, Math.min(mh, Number(this.health) || 0));
-      const ratio = clamp01(hp / mh);
-
-      this.healthFill.width = HEALTH_BAR_W_PX * ratio;
-      this.healthFill.x = -HEALTH_BAR_W_PX / 2;
-    }
+    // health bar (REMOTE only)
+    this.updateHealthBar();
   }
 }

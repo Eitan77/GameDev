@@ -10,6 +10,8 @@
 //
 // ✅ Now starts from MatchmakingScene with a seat reservation:
 //    this.scene.start("GameScene", { reservation, client })
+//
+// ✅ Launches UIScene (HUD overlay) for health + timer
 // ============================================================
 
 import Phaser from "phaser";
@@ -201,6 +203,29 @@ export default class GameScene extends Phaser.Scene {
     });
   }
 
+  // ------------------------------------------------------------
+  // HUD overlay (UIScene)
+  // - Runs as a separate Scene so it never jitters with camera movement.
+  // - Draws health + timer.
+  // ------------------------------------------------------------
+  ensureUIScene() {
+    const gameKey = this.sys?.settings?.key || "GameScene";
+
+    try {
+      if (this.scene.isActive("UIScene")) {
+        const ui = this.scene.get("UIScene");
+        if (ui && typeof ui.setGameSceneKey === "function") ui.setGameSceneKey(gameKey);
+        this.scene.bringToTop("UIScene");
+        return;
+      }
+
+      this.scene.launch("UIScene", { gameSceneKey: gameKey });
+      this.scene.bringToTop("UIScene");
+    } catch (e) {
+      console.warn("Failed to start UIScene:", e);
+    }
+  }
+
   async create() {
     this.map = new GameMap(this).create();
 
@@ -211,6 +236,9 @@ export default class GameScene extends Phaser.Scene {
       .text(20, 20, "Joining match...", { fontSize: "18px", color: "#ffffff" })
       .setScrollFactor(0)
       .setDepth(2000);
+
+    // Start HUD overlay (health + timer)
+    this.ensureUIScene();
 
     this.keyTiltLeft = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.W);
     this.keyTiltRight = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.E);
@@ -310,6 +338,9 @@ export default class GameScene extends Phaser.Scene {
         );
 
         this.applyCameraTuning();
+
+        // make sure HUD stays on top
+        this.ensureUIScene();
       }
 
       if (playerState && Object.prototype.hasOwnProperty.call(playerState, "onChange")) {
@@ -321,13 +352,21 @@ export default class GameScene extends Phaser.Scene {
         const refresh = () => p.setTargetFromState(playerState);
 
         [
-          "x","y","a",
-          "armX","armY","armA",
+          "x",
+          "y",
+          "a",
+          "armX",
+          "armY",
+          "armA",
           "dir",
-          "gunId","ammo",
-          "maxHealth","health",
+          "gunId",
+          "ammo",
+          "maxHealth",
+          "health",
           "dead",
-          "gunX","gunY","gunA"
+          "gunX",
+          "gunY",
+          "gunA",
         ].forEach((k) => {
           this.callbacks.listen(playerState, k, refresh);
         });
@@ -351,7 +390,9 @@ export default class GameScene extends Phaser.Scene {
     this.callbacks.onAdd("powerUps", (puState, puId) => {
       const existing = this.powerUps.get(puId);
       if (existing) {
-        try { existing.destroy?.(); } catch (_) {}
+        try {
+          existing.destroy?.();
+        } catch (_) {}
         this.powerUps.delete(puId);
       }
 
@@ -394,7 +435,9 @@ export default class GameScene extends Phaser.Scene {
   // create an image at each Tiled point in "PlayerSpawnPoints" (no collision)
   spawnCheckpointMarkers() {
     for (const s of this.checkpointSprites) {
-      try { s.destroy(); } catch (_) {}
+      try {
+        s.destroy();
+      } catch (_) {}
     }
     this.checkpointSprites = [];
 
@@ -454,25 +497,40 @@ export default class GameScene extends Phaser.Scene {
   }
 
   cleanup() {
-    try { this.cameras?.main?.stopFollow(); } catch (_) {}
+    // Stop HUD overlay
+    try {
+      if (this.scene?.isActive("UIScene")) this.scene.stop("UIScene");
+    } catch (_) {}
+
+    try {
+      this.cameras?.main?.stopFollow();
+    } catch (_) {}
 
     for (const p of this.players.values()) {
-      try { p.destroy(); } catch (_) {}
+      try {
+        p.destroy();
+      } catch (_) {}
     }
     this.players.clear();
     this.localPlayer = null;
 
     for (const v of this.powerUps.values()) {
-      try { v.destroy?.(); } catch (_) {}
+      try {
+        v.destroy?.();
+      } catch (_) {}
     }
     this.powerUps.clear();
 
     for (const s of this.checkpointSprites) {
-      try { s.destroy(); } catch (_) {}
+      try {
+        s.destroy();
+      } catch (_) {}
     }
     this.checkpointSprites = [];
 
-    try { this.room?.leave(); } catch (_) {}
+    try {
+      this.room?.leave();
+    } catch (_) {}
     this.room = null;
 
     this.client = null;
@@ -499,10 +557,7 @@ export default class GameScene extends Phaser.Scene {
     const firePressed = localDead ? false : Phaser.Input.Keyboard.JustDown(this.keyFire);
     if (firePressed) this.fireSeq = (this.fireSeq + 1) | 0;
 
-    const b =
-      (tiltLeft ? 1 : 0) |
-      (tiltRight ? 2 : 0) |
-      (this.dragActive ? 4 : 0);
+    const b = (tiltLeft ? 1 : 0) | (tiltRight ? 2 : 0) | (this.dragActive ? 4 : 0);
 
     const payload = { b, f: this.fireSeq };
     if (this.dragActive) {

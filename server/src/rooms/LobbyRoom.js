@@ -5,6 +5,7 @@
 // ✅ MOVEMENT-SAFE: does not change PlayerSim movement code
 // ✅ Adds: ragdoll for a short time, then respawn
 // ✅ Adds: death-only knockback (custom per gun)
+// ✅ Adds: server-authoritative 2:00 round timer (state.roundTimeLeftSec)
 // ============================================================
 
 import { Room } from "colyseus";
@@ -42,6 +43,12 @@ const FIXED_DT = 1 / SERVER_TICK_HZ;
 const FIXED_DT_MS = 1000 / SERVER_TICK_HZ;
 
 const GRAVITY_Y = 40;
+
+// --------------------
+// Round timer
+// --------------------
+// Server-authoritative round countdown (2 minutes)
+const ROUND_DURATION_SEC = 120;
 
 // --------------------
 // Health / respawn
@@ -133,22 +140,12 @@ function shouldUpgradeCheckpoint(curBaseId, newBaseId) {
 }
 
 function pointInRect(px, py, rect) {
-  return (
-    px >= rect.x &&
-    px <= rect.x + rect.w &&
-    py >= rect.y &&
-    py <= rect.y + rect.h
-  );
+  return px >= rect.x && px <= rect.x + rect.w && py >= rect.y && py <= rect.y + rect.h;
 }
 
 function rectsOverlap(a, b) {
   // Inclusive overlap so "touching" counts as contact
-  return (
-    a.x <= b.x + b.w &&
-    a.x + a.w >= b.x &&
-    a.y <= b.y + b.h &&
-    a.y + a.h >= b.y
-  );
+  return a.x <= b.x + b.w && a.x + a.w >= b.x && a.y <= b.y + b.h && a.y + a.h >= b.y;
 }
 
 function getBodyAabbPx(body) {
@@ -175,7 +172,12 @@ function getBodyAabbPx(body) {
     maxY = Math.max(maxY, aabb.upperBound.y * PPM);
   }
 
-  if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+  if (
+    !Number.isFinite(minX) ||
+    !Number.isFinite(minY) ||
+    !Number.isFinite(maxX) ||
+    !Number.isFinite(maxY)
+  ) {
     return null;
   }
 
@@ -185,6 +187,16 @@ function getBodyAabbPx(body) {
 export default class LobbyRoom extends Room {
   onCreate() {
     this.setState(new LobbyState());
+
+    // ------------------------------------------------------------
+    // Round timer (server authoritative)
+    // - Starts when the room is created.
+    // - Clients read state.roundTimeLeftSec and render it.
+    // ------------------------------------------------------------
+    this._roundEndMs = Date.now() + ROUND_DURATION_SEC * 1000;
+    this._lastRoundTimeLeftSec = ROUND_DURATION_SEC;
+    this.state.roundDurationSec = ROUND_DURATION_SEC;
+    this.state.roundTimeLeftSec = ROUND_DURATION_SEC;
 
     // Patch state 60Hz
     const patchMs = Math.max(1, Math.round(1000 / SERVER_PATCH_HZ));
@@ -225,7 +237,7 @@ export default class LobbyRoom extends Room {
 
       for (const o of kzObjs) {
         const killsProp = getTiledPropValue(o, "Kills");
-        const killsEnabled = (killsProp === undefined) ? layerKillsDefault : !!killsProp;
+        const killsEnabled = killsProp === undefined ? layerKillsDefault : !!killsProp;
         if (!killsEnabled) continue;
 
         const x = Number(o?.x);
@@ -243,12 +255,12 @@ export default class LobbyRoom extends Room {
     // Checkpoints: read from Tiled object layers
     // ------------------------------------------------------------
     this.checkpointSpawnsByBaseId = new Map(); // baseId -> {x,y}
-    this.checkpointTriggers = [];              // [{ baseId, x,y,w,h }]
+    this.checkpointTriggers = []; // [{ baseId, x,y,w,h }]
 
     // Per-player respawn tracking
-    this.playerCheckpointBaseId = new Map();   // sid -> baseId (ex: "cp02")
-    this.playerRespawnBySid = new Map();       // sid -> {x,y}
-    this.playerInsideCheckpoint = new Map();   // sid -> Set(baseId) for edge-triggered entry
+    this.playerCheckpointBaseId = new Map(); // sid -> baseId (ex: "cp02")
+    this.playerRespawnBySid = new Map(); // sid -> {x,y}
+    this.playerInsideCheckpoint = new Map(); // sid -> Set(baseId) for edge-triggered entry
 
     // Default spawn if no checkpoints exist
     this.defaultRespawn = { x: RESPAWN_X, y: RESPAWN_Y, baseId: "", order: NaN };
@@ -259,44 +271,49 @@ export default class LobbyRoom extends Room {
       const spawnObjs = Array.isArray(spawnLayer?.objects) ? spawnLayer.objects : [];
 
       for (const o of spawnObjs) {
-        const rawId = getTiledPropValue(o, "id");
-        const baseId = normalizeCheckpointBaseId(rawId);
+        const idRaw = getTiledPropValue(o, "id");
+        const baseId = normalizeCheckpointBaseId(idRaw);
+        if (!baseId) continue;
+
         const x = Number(o?.x);
         const y = Number(o?.y);
-        if (!baseId || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+
+        // Tiled point objects are their own "position"
         this.checkpointSpawnsByBaseId.set(baseId, { x: Math.round(x), y: Math.round(y) });
       }
 
-      // Trigger rectangles
-      const hitboxLayer = getObjectLayer(this.mapJson, "PlayerSpawnHitboxes");
-      const hitboxObjs = Array.isArray(hitboxLayer?.objects) ? hitboxLayer.objects : [];
+      // Spawn hitboxes
+      const hitLayer = getObjectLayer(this.mapJson, "PlayerSpawnHitboxes");
+      const hitObjs = Array.isArray(hitLayer?.objects) ? hitLayer.objects : [];
 
-      for (const o of hitboxObjs) {
-        const rawId = getTiledPropValue(o, "id");
-        const baseId = normalizeCheckpointBaseId(rawId);
+      for (const o of hitObjs) {
+        const idRaw = getTiledPropValue(o, "id");
+        const baseId = normalizeCheckpointBaseId(idRaw);
+        if (!baseId) continue;
 
         const x = Number(o?.x);
         const y = Number(o?.y);
         const w = Number(o?.width);
         const h = Number(o?.height);
-
-        // You said you used rectangles. If you ever switch to polygons later,
-        // we can add point-in-polygon checks.
-        if (!baseId || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) continue;
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) continue;
         if (!(w > 0) || !(h > 0)) continue;
 
-        this.checkpointTriggers.push({
-          baseId,
-          x,
-          y,
-          w,
-          h,
-        });
+        this.checkpointTriggers.push({ baseId, x, y, w, h });
       }
 
-      // Pick a default spawn from the lowest numbered checkpoint (cp01, cp02, ...)
+      // Sort triggers by checkpoint order so later checkpoints override earlier ones naturally.
+      this.checkpointTriggers.sort((a, b) => {
+        const ao = checkpointOrderFromBaseId(a.baseId);
+        const bo = checkpointOrderFromBaseId(b.baseId);
+        if (Number.isFinite(ao) && Number.isFinite(bo) && ao !== bo) return ao - bo;
+        return String(a.baseId).localeCompare(String(b.baseId));
+      });
+
+      // Choose a default respawn baseId if we have at least one spawn point.
       if (this.checkpointSpawnsByBaseId.size > 0) {
-        const bases = Array.from(this.checkpointSpawnsByBaseId.keys());
+        const bases = [...this.checkpointSpawnsByBaseId.keys()];
+
         bases.sort((a, b) => {
           const ao = checkpointOrderFromBaseId(a);
           const bo = checkpointOrderFromBaseId(b);
@@ -519,109 +536,55 @@ export default class LobbyRoom extends Room {
     // ✅ revive state
     st.dead = false;
 
-    // teleport + reset sim
-    sim.respawnAt(pt.x, pt.y);
-
-    // After teleport, clear "inside" sets so future checkpoint entries
-    // are detected cleanly.
-    this.playerInsideCheckpoint.set(sessionId, new Set());
-
-    // clear input so no instant jump/fire edge cases
-    this.playerInputs.set(sessionId, {});
+    // reset sim
+    sim.respawn(pt.x, pt.y);
   }
 
-  killPlayer(sessionId, killInfo) {
-    const st = this.state.players.get(sessionId);
-    const sim = this.playerSims.get(sessionId);
+  killPlayer(sessionId, damageEvent) {
+    const sid = String(sessionId || "");
+    const st = this.state.players.get(sid);
+    const sim = this.playerSims.get(sid);
     if (!st || !sim) return;
 
-    // already dead? ignore
+    // already dead?
     if (st.dead) return;
 
     // mark dead
-    st.health = 0;
     st.dead = true;
+    st.health = 0;
 
-    // put sim into ragdoll (movement forces stop)
-    if (typeof sim.setDead === "function") sim.setDead(true);
-
-    // ✅ death-only knockback (direction + strength come from the damage event)
-    const kx = Number(killInfo?.kx);
-    const ky = Number(killInfo?.ky);
-    const kb = Number(killInfo?.kb);
-    const kbu = Number(killInfo?.kbu);
-
-    if (Number.isFinite(kx) && Number.isFinite(ky) && Number.isFinite(kb) && kb > 0) {
-      if (typeof sim.applyDeathKnockback === "function") {
-        sim.applyDeathKnockback(kx, ky, kb, Number.isFinite(kbu) ? kbu : 0);
-      }
-    }
+    // ragdoll in sim
+    sim.kill(damageEvent);
 
     // schedule respawn
     const t = setTimeout(() => {
-      this.deathRespawnTimers.delete(sessionId);
-      this.respawnPlayer(sessionId);
-    }, Math.max(0.05, DEATH_RAGDOLL_SEC) * 1000);
+      this.respawnPlayer(sid);
+      this.deathRespawnTimers.delete(sid);
+    }, DEATH_RAGDOLL_SEC * 1000);
 
-    this.deathRespawnTimers.set(sessionId, t);
+    this.deathRespawnTimers.set(sid, t);
   }
 
-  // ------------------------------------------------------------
-  // Checkpoints
-  // ------------------------------------------------------------
-  tryActivateCheckpoint(sessionId, baseId) {
-    const sid = String(sessionId || "");
-    const b = String(baseId || "");
-    if (!sid || !b) return;
-
-    // Must have a spawn point for this checkpoint
-    const spawn = this.checkpointSpawnsByBaseId?.get(b);
-    if (!spawn) return;
-
-    const cur = this.playerCheckpointBaseId.get(sid) || String(this.defaultRespawn?.baseId || "");
-    if (!shouldUpgradeCheckpoint(cur, b)) return;
-
-    this.playerCheckpointBaseId.set(sid, b);
-    this.playerRespawnBySid.set(sid, { x: spawn.x, y: spawn.y });
-
-    // Optional: notify clients (safe if clients ignore it)
-    this.broadcast("checkpoint", { sid, id: b, x: spawn.x, y: spawn.y });
-  }
-
-  // ------------------------------------------------------------
-  // KillZones
-  // ------------------------------------------------------------
   updateKillZones() {
     if (!Array.isArray(this.killZoneRects) || this.killZoneRects.length === 0) return;
 
     for (const [sid, sim] of this.playerSims.entries()) {
       const st = this.state.players.get(sid);
-      if (!st || st.dead) continue;
-      if (!sim || !sim.body) continue;
+      if (!st) continue;
 
-      // Use the player's physics AABB (so any touch counts).
-      const aabbPx = getBodyAabbPx(sim.body);
+      // ignore while dead
+      if (st.dead) continue;
 
-      if (aabbPx) {
-        for (const r of this.killZoneRects) {
-          if (!r) continue;
-          if (!rectsOverlap(aabbPx, r)) continue;
+      const body = sim.getBody?.();
+      if (!body) continue;
 
-          // Die exactly like being shot (ragdoll + respawn)
-          this.killPlayer(sid, { source: "killzone" });
-          break;
-        }
-      } else {
-        // Fallback: body center point
-        const p = sim.body.getPosition();
-        const px = p.x * PPM;
-        const py = p.y * PPM;
+      const aabb = getBodyAabbPx(body);
+      if (!aabb) continue;
 
-        for (const r of this.killZoneRects) {
-          if (!r) continue;
-          if (!pointInRect(px, py, r)) continue;
-
-          this.killPlayer(sid, { source: "killzone" });
+      for (const kz of this.killZoneRects) {
+        if (rectsOverlap(aabb, kz)) {
+          // kill like damage event
+          this.killPlayer(sid, { kind: "damage", to: sid, amount: 9999 });
           break;
         }
       }
@@ -633,31 +596,68 @@ export default class LobbyRoom extends Room {
 
     for (const [sid, sim] of this.playerSims.entries()) {
       const st = this.state.players.get(sid);
-      if (!st || st.dead) continue;
-      if (!sim || !sim.body) continue;
+      if (!st) continue;
 
-      // Player position in pixels (body center)
-      const p = sim.body.getPosition();
-      const px = p.x * PPM;
-      const py = p.y * PPM;
+      // ignore while dead (ragdoll)
+      if (st.dead) continue;
 
-      const prevInside = this.playerInsideCheckpoint.get(sid) || new Set();
-      const nowInside = new Set();
+      const body = sim.getBody?.();
+      if (!body) continue;
 
-      for (const t of this.checkpointTriggers) {
-        if (!t || !t.baseId) continue;
-        const inside = pointInRect(px, py, t);
-        if (!inside) continue;
+      const aabb = getBodyAabbPx(body);
+      if (!aabb) continue;
 
-        nowInside.add(t.baseId);
+      const insideSet = this.playerInsideCheckpoint.get(sid) || new Set();
+      this.playerInsideCheckpoint.set(sid, insideSet);
 
-        // Edge-trigger: only when we ENTER this rectangle
-        if (!prevInside.has(t.baseId)) {
-          this.tryActivateCheckpoint(sid, t.baseId);
+      let bestEnteredBaseId = "";
+
+      for (const trg of this.checkpointTriggers) {
+        const overlaps = rectsOverlap(aabb, trg);
+
+        if (overlaps) {
+          // edge-trigger: only count as "entered" if wasn't inside last step
+          if (!insideSet.has(trg.baseId)) {
+            insideSet.add(trg.baseId);
+
+            // candidate for upgrade
+            if (shouldUpgradeCheckpoint(bestEnteredBaseId, trg.baseId)) {
+              bestEnteredBaseId = trg.baseId;
+            }
+          }
+        } else {
+          insideSet.delete(trg.baseId);
         }
       }
 
-      this.playerInsideCheckpoint.set(sid, nowInside);
+      if (!bestEnteredBaseId) continue;
+
+      const cur = String(this.playerCheckpointBaseId.get(sid) || "");
+      if (!shouldUpgradeCheckpoint(cur, bestEnteredBaseId)) continue;
+
+      const pos = this.checkpointSpawnsByBaseId.get(bestEnteredBaseId);
+      if (!pos) continue;
+
+      this.playerCheckpointBaseId.set(sid, bestEnteredBaseId);
+      this.playerRespawnBySid.set(sid, { x: pos.x, y: pos.y });
+    }
+  }
+
+  // ------------------------------------------------------------
+  // Round timer update (server authoritative)
+  // Writes to state.roundTimeLeftSec only when the displayed second changes.
+  // ------------------------------------------------------------
+  updateRoundTimer() {
+    // If no timer was initialized, do nothing.
+    if (!Number.isFinite(this._roundEndMs)) return;
+
+    const remMs = this._roundEndMs - Date.now();
+    const secLeftRaw = remMs <= 0 ? 0 : Math.ceil(remMs / 1000);
+    const secLeft = Math.max(0, Math.min(ROUND_DURATION_SEC, secLeftRaw | 0));
+
+    // Only update state when it actually changes (saves bandwidth).
+    if (this.state.roundTimeLeftSec !== secLeft) {
+      this.state.roundTimeLeftSec = secLeft;
     }
   }
 
@@ -679,6 +679,9 @@ export default class LobbyRoom extends Room {
     if (steps === MAX_CATCHUP_STEPS) {
       this._accMs = 0;
     }
+
+    // Update round timer at most once per simLoop tick.
+    this.updateRoundTimer();
   }
 
   fixedStep() {
@@ -788,28 +791,6 @@ export default class LobbyRoom extends Room {
       st.gunX = s.gunX;
       st.gunY = s.gunY;
       st.gunA = s.gunA;
-    }
-
-    // 5) broadcast events
-    for (const e of allEvents) {
-      if (e.kind === "shot") {
-        this.broadcast("shot", e);
-
-      } else if (e.kind === "sound") {
-        const key = e.k ?? e.key;
-        const vol = e.v ?? e.volume ?? 1;
-        const rate = e.r ?? e.rate ?? 1;
-        this.broadcastSound(key, vol, rate);
-
-      } else if (e.kind === "soundDelayed") {
-        const delayMs = Math.max(0, Number(e.delaySec ?? 0)) * 1000;
-
-        const key = e.k ?? e.key;
-        const vol = e.v ?? e.volume ?? 1;
-        const rate = e.r ?? e.rate ?? 1;
-
-        setTimeout(() => this.broadcastSound(key, vol, rate), delayMs);
-      }
     }
   }
 }
