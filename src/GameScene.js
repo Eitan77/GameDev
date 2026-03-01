@@ -1,3 +1,4 @@
+// GameScene.js
 // ============================================================
 // GameScene.js
 // CLIENT: render-only.
@@ -158,6 +159,9 @@ export default class GameScene extends Phaser.Scene {
     this._reservation = null;
     this._clientFromMM = null;
 
+    // username chosen in MainMenuScene (passed through MatchmakingScene)
+    this._username = "Player";
+
     this.map = null;
 
     this.players = new Map();
@@ -186,6 +190,13 @@ export default class GameScene extends Phaser.Scene {
     // comes from MatchmakingScene
     this._reservation = data?.reservation ?? null;
     this._clientFromMM = data?.client ?? null;
+
+    const raw = data?.username;
+    const name = String(raw ?? "")
+      .trim()
+      .replace(/\s+/g, " ")
+      .slice(0, 16);
+    this._username = name || "Player";
   }
 
   preload() {
@@ -300,6 +311,12 @@ export default class GameScene extends Phaser.Scene {
 
       this.statusText.setText(`Connected: ${COLYSEUS_URL}`);
 
+      // Tell the server our username (server will store it in PlayerState.name)
+      // Safe even if server hasn't implemented it yet (it will just ignore it).
+      try {
+        this.room.send("setName", { name: this._username });
+      } catch (_) {}
+
       this.registerCleanup();
     } catch (e) {
       console.error("Failed to join game room:", e);
@@ -352,6 +369,7 @@ export default class GameScene extends Phaser.Scene {
         const refresh = () => p.setTargetFromState(playerState);
 
         [
+          "name",
           "x",
           "y",
           "a",
@@ -469,22 +487,25 @@ export default class GameScene extends Phaser.Scene {
     const ax = Phaser.Math.Clamp(CAMERA_DEADZONE_ANCHOR_X, 0, 1);
     const ay = Phaser.Math.Clamp(CAMERA_DEADZONE_ANCHOR_Y, 0, 1);
 
-    const offX = (0.5 - ax) * cam.width;
-    const offY = (0.5 - ay) * cam.height;
-    cam.setFollowOffset(offX, offY);
-
     cam.setDeadzone(CAMERA_DEADZONE_W_PX, CAMERA_DEADZONE_H_PX);
-
-    if (cam.deadzone) {
-      cam.deadzone.x = cam.width * ax - CAMERA_DEADZONE_W_PX / 2;
-      cam.deadzone.y = cam.height * ay - CAMERA_DEADZONE_H_PX / 2;
-    }
+    cam.setFollowOffset(
+      (ax - 0.5) * CAMERA_DEADZONE_W_PX,
+      (ay - 0.5) * CAMERA_DEADZONE_H_PX
+    );
   }
 
   createPowerUpView(puState) {
-    const type = String(puState?.type || "");
-    if (type === "sniper") return new SniperGunPowerUp({ scene: this, x: puState.x, y: puState.y });
-    if (type) return new GunPowerUp({ scene: this, gunId: type, x: puState.x, y: puState.y });
+    const type = puState?.type;
+    if (type === "sniper") {
+      return new SniperGunPowerUp({ scene: this, x: puState.x, y: puState.y });
+    }
+
+    if (type) {
+      try {
+        return new GunPowerUp({ scene: this, gunId: type, x: puState.x, y: puState.y });
+      } catch (_) {}
+    }
+
     return null;
   }
 
@@ -497,9 +518,21 @@ export default class GameScene extends Phaser.Scene {
   }
 
   cleanup() {
-    // Stop HUD overlay
+    if (this.scale) this.scale.off("resize");
+
     try {
-      if (this.scene?.isActive("UIScene")) this.scene.stop("UIScene");
+      this.input?.off("pointerdown");
+      this.input?.off("pointermove");
+      this.input?.off("pointerup");
+      this.input?.off("pointerupoutside");
+    } catch (_) {}
+
+    try {
+      this.room?.removeAllListeners();
+    } catch (_) {}
+
+    try {
+      this.callbacks?.removeAllListeners?.();
     } catch (_) {}
 
     try {
@@ -554,10 +587,17 @@ export default class GameScene extends Phaser.Scene {
     const tiltLeft = localDead ? false : !!this.keyTiltLeft?.isDown;
     const tiltRight = localDead ? false : !!this.keyTiltRight?.isDown;
 
+    const fireHeld = localDead ? false : !!this.keyFire?.isDown;
     const firePressed = localDead ? false : Phaser.Input.Keyboard.JustDown(this.keyFire);
     if (firePressed) this.fireSeq = (this.fireSeq + 1) | 0;
 
-    const b = (tiltLeft ? 1 : 0) | (tiltRight ? 2 : 0) | (this.dragActive ? 4 : 0);
+    // b is a compact bitmask:
+    // 1 = tiltLeft, 2 = tiltRight, 4 = dragActive, 8 = fireHeld
+    const b =
+      (tiltLeft ? 1 : 0) |
+      (tiltRight ? 2 : 0) |
+      (this.dragActive ? 4 : 0) |
+      (fireHeld ? 8 : 0);
 
     const payload = { b, f: this.fireSeq };
     if (this.dragActive) {

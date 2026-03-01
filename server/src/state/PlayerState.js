@@ -3,6 +3,9 @@ import { Schema, defineTypes } from "@colyseus/schema";
 export default class PlayerState extends Schema {
   constructor() {
     super();
+    // username shown above the player
+    this.name = "Player";
+
     this.x = 0;
     this.y = 0;
     this.a = 0;
@@ -31,6 +34,8 @@ export default class PlayerState extends Schema {
 }
 
 defineTypes(PlayerState, {
+  name: "string",
+
   x: "int32",
   y: "int32",
   a: "float32",

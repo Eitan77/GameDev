@@ -7,14 +7,13 @@
 // - When N players are waiting, create a NEW "lobby" instance
 //   and send seat reservations to those N players.
 //
-// TEMP TESTING MODE:
-//   MATCH_SIZE = 1  (start match as soon as 1 player joins)
-//   Change back to 4 when done testing.
+// Match settings:
+//   MATCH_SIZE = 4  (standard 4-player lobbies)
 // ============================================================
 
 import { Room, matchMaker } from "colyseus";
 
-const MATCH_SIZE = 1; // <-- TEMP: 1-player match start for testing
+const MATCH_SIZE = 1;
 
 export default class MatchmakingRoom extends Room {
   onCreate() {
@@ -23,6 +22,9 @@ export default class MatchmakingRoom extends Room {
 
     /** @type {import("colyseus").Client[]} */
     this.waiting = [];
+
+    // sessionId -> username
+    this.usernamesBySid = new Map();
 
     // Prevent two match loops running at once
     this._locking = false;
@@ -36,7 +38,12 @@ export default class MatchmakingRoom extends Room {
     this._broadcastQueue();
   }
 
-  onJoin(client) {
+  onJoin(client, options) {
+    // read username from join options
+    const rawName = (options && (options.username ?? options.name)) || "";
+    const safeName = String(rawName).trim().slice(0, 16);
+    this.usernamesBySid.set(client.sessionId, safeName || "Player");
+
     this.waiting.push(client);
 
     // tell everyone how many are waiting
@@ -55,6 +62,9 @@ export default class MatchmakingRoom extends Room {
     const sid = client?.sessionId;
     if (!sid) return;
     this.waiting = this.waiting.filter((c) => c?.sessionId !== sid);
+
+    // cleanup username cache
+    this.usernamesBySid.delete(sid);
   }
 
   _broadcastQueue() {
@@ -130,7 +140,8 @@ export default class MatchmakingRoom extends Room {
         // reserve seats + tell the clients to join
         for (const c of live) {
           try {
-            const reservation = await this._reserve(created, roomId, {});
+            const username = this.usernamesBySid.get(c.sessionId) || "Player";
+            const reservation = await this._reserve(created, roomId, { username });
             c.send("matchFound", reservation);
           } catch (err) {
             console.error("[MatchmakingRoom] reserveSeatFor failed:", err);

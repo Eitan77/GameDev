@@ -264,7 +264,8 @@ export default class UIScene extends Phaser.Scene {
     // -------------------------
     // Health bar (local player)
     // -------------------------
-    if (!localPlayer || localPlayer.isDead) {
+    // ✅ Keep the health bar visible even when the player is dead (it will show 0).
+    if (!localPlayer) {
       if (this.healthBar) this.healthBar.setVisible(false);
     } else if (this.healthBar && this.healthFill) {
       // Position once when resized

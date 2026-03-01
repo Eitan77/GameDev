@@ -1,3 +1,4 @@
+// gunCatalog.js
 // ============================================================
 // src/gunCatalog.js
 // Client-side gun definitions (must match server).
@@ -31,6 +32,16 @@ export const GUN_CATALOG = {
     autoAimSpeedDegPerSec: 300,
 
     damage: 50,
+
+    // --------------------
+    // Fire behavior
+    // --------------------
+    // If true: holding the fire button will continuously fire.
+    // If false: you must release and re-press (semi-auto behavior).
+    automatic: true,
+
+    // Minimum milliseconds between shots (server authoritative).
+    timeBetweenShots: 500,
 
     // ✅ Death-only knockback (ONLY applied if this hit kills)
     deathKnockbackPxPerSec: 2000,     // main push strength

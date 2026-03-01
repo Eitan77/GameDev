@@ -13,5 +13,24 @@ export default class GameRoom extends LobbyRoom {
 
     // run your original LobbyRoom setup exactly as-is
     super.onCreate(options);
+
+    // ------------------------------------------------------------
+    // Username from client
+    // - Client sends: room.send("setName", { name: "..." })
+    // - Stored in PlayerState.name and replicated to all clients
+    // ------------------------------------------------------------
+    this.onMessage("setName", (client, msg) => {
+      const st = this.state?.players?.get(client.sessionId);
+      if (!st) return;
+
+      const raw = (typeof msg === "string") ? msg : msg?.name;
+      let name = String(raw ?? "")
+        .trim()
+        .replace(/\s+/g, " ")
+        .slice(0, 16);
+
+      if (!name) name = "Player";
+      st.name = name;
+    });
   }
 }

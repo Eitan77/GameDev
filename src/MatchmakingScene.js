@@ -8,7 +8,7 @@ const MATCHMAKING_ROOM = "matchmaking";
 // TEMP TESTING MODE:
 //   MATCH_SIZE = 1  (start match as soon as 1 player joins)
 //   Change back to 4 when done testing.
-const MATCH_SIZE = 1;
+const MATCH_SIZE = 4;
 
 export default class MatchmakingScene extends Phaser.Scene {
   constructor() {
@@ -29,8 +29,21 @@ export default class MatchmakingScene extends Phaser.Scene {
     this._starting = false;
     this._handedOff = false;
 
+    // username passed from MainMenuScene
+    this.username = "Player";
+
     // safe resize handler storage (prevents calling layout after scene is destroyed)
     this._onResize = null;
+  }
+
+  init(data) {
+    // Comes from MainMenuScene
+    const raw = data?.username;
+    const name = String(raw ?? "")
+      .trim()
+      .replace(/\s+/g, " ")
+      .slice(0, 16);
+    this.username = name || "Player";
   }
 
   create() {
@@ -226,7 +239,7 @@ export default class MatchmakingScene extends Phaser.Scene {
 
       // hand off the client + reservation to GameScene
       this._handedOff = true;
-      this.scene.start("GameScene", { reservation, client: this.client });
+      this.scene.start("GameScene", { reservation, client: this.client, username: this.username });
     });
   }
 

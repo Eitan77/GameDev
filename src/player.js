@@ -33,6 +33,12 @@ const HEALTH_BAR_H_PX = 10;
 
 const HEALTH_BAR_OFFSET_FROM_HEAD_PX = 18;
 
+// ------------------------------------------------------------
+// Username label (above player)
+// ------------------------------------------------------------
+const NAME_OFFSET_FROM_HEAD_PX = 38;
+const NAME_DEPTH = 60;
+
 const HEALTH_BAR_BORDER_COLOR = 0x000000;
 const HEALTH_BAR_BORDER_ALPHA = 0.9;
 
@@ -109,6 +115,21 @@ export default class Player {
     this.health = 100;
 
     // ------------------------
+    // username (rendered above head)
+    // ------------------------
+    this.name = "Player";
+    this.nameText = this.scene.add
+      .text(0, 0, this.name, {
+        fontFamily: "Arial, sans-serif",
+        fontSize: "18px",
+        color: "#ffffff",
+        stroke: "#000000",
+        strokeThickness: 4,
+      })
+      .setOrigin(0.5, 1);
+    this.nameText.setDepth(NAME_DEPTH);
+
+    // ------------------------
     // health bar graphics (same style as before)
     // ------------------------
     const plate = this.scene.add
@@ -152,12 +173,14 @@ export default class Player {
   destroy() {
     if (this.gunSprite) this.gunSprite.destroy();
     if (this.healthBar) this.healthBar.destroy(true);
+    if (this.nameText) this.nameText.destroy();
     if (this.arm) this.arm.destroy();
     if (this.sprite) this.sprite.destroy();
 
     this.gunSprite = null;
     this.healthBar = null;
     this.healthFill = null;
+    this.nameText = null;
     this.arm = null;
     this.sprite = null;
   }
@@ -180,7 +203,9 @@ export default class Player {
         this.gunSprite.setAlpha(DEAD_ALPHA);
       }
 
-      if (this.healthBar) this.healthBar.setVisible(false);
+      // ✅ keep health bar visible even when dead (shows 0)
+      if (this.healthBar) this.healthBar.setVisible(!this.isLocal);
+      if (this.nameText) this.nameText.setAlpha(DEAD_ALPHA);
     } else {
       this.sprite.clearTint();
       this.arm.clearTint();
@@ -193,6 +218,8 @@ export default class Player {
         this.gunSprite.setAlpha(1);
       }
 
+      if (this.nameText) this.nameText.setAlpha(1);
+
       // Local player health is rendered in the HUD overlay (UIScene)
       if (this.healthBar) this.healthBar.setVisible(!this.isLocal);
     }
@@ -202,6 +229,7 @@ export default class Player {
   // Read server schema state into local target
   // ------------------------------------------------------------
   setTargetFromState(s) {
+    const name = typeof s.name === "string" ? s.name : this.name;
     const x = Number(s.x) || 0;
     const y = Number(s.y) || 0;
     const a = Number(s.a) || 0;
@@ -223,6 +251,7 @@ export default class Player {
     const dead = typeof s.dead === "boolean" ? s.dead : safeHealth <= 0;
 
     this.target = {
+      name,
       x,
       y,
       a,
@@ -239,6 +268,9 @@ export default class Player {
 
     this.maxHealth = maxHealth;
     this.health = safeHealth;
+
+    this.name = name || "Player";
+    if (this.nameText) this.nameText.setText(this.name);
 
     this.isDead = dead;
 
@@ -340,7 +372,7 @@ export default class Player {
   // - Local player: rendered in UIScene (HUD overlay)
   // ------------------------------------------------------------
   updateHealthBar() {
-    if (!this.healthBar || !this.healthFill || this.isDead) return;
+    if (!this.healthBar || !this.healthFill) return;
 
     // Local player health is rendered in the HUD overlay (UIScene)
     if (this.isLocal) return;
@@ -358,6 +390,15 @@ export default class Player {
     this.healthBar.setScale(1);
     this.healthBar.x = this.sprite.x;
     this.healthBar.y = topY - HEALTH_BAR_OFFSET_FROM_HEAD_PX;
+  }
+
+  // Username label: above the head (world-space)
+  updateNameText() {
+    if (!this.nameText || !this.sprite) return;
+
+    const topY = this.sprite.y - PLAYER_H_PX / 2;
+    this.nameText.x = this.sprite.x;
+    this.nameText.y = topY - NAME_OFFSET_FROM_HEAD_PX;
   }
 
   // ------------------------------------------------------------
@@ -385,5 +426,8 @@ export default class Player {
 
     // health bar (REMOTE only)
     this.updateHealthBar();
+
+    // name label (all players)
+    this.updateNameText();
   }
 }

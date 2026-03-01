@@ -1,3 +1,4 @@
+// PlayerSim.js
 // ============================================================
 // server/src/sim/PlayerSim.js
 // Server-side Planck simulation for one player.
@@ -133,6 +134,13 @@ export default class PlayerSim {
     this.ammo = 0;
 
     this.lastFireSeq = 0;
+
+    // Fire controls (server authoritative)
+    this.fireHeld = false;
+
+    // Server-side rate limiting / automatic fire timing
+    this._simTimeMs = 0;
+    this._nextShotMs = 0;
 
     // ✅ death / ragdoll state
     this.dead = false;
@@ -778,12 +786,23 @@ export default class PlayerSim {
   giveGun(gunId) {
     const def = this.gunCatalog?.[gunId];
     if (!def) return false;
+
     this.gunId = gunId;
     this.ammo = Math.max(0, Math.min(127, Number(def.ammo ?? 0) | 0));
+
+    // allow an immediate shot after pickup
+    this._nextShotMs = this._simTimeMs;
+    this.fireHeld = false;
+
     return true;
   }
 
-  dropGun() { this.gunId = ""; this.ammo = 0; }
+  dropGun() {
+    this.gunId = "";
+    this.ammo = 0;
+    this._nextShotMs = this._simTimeMs;
+    this.fireHeld = false;
+  }
 
   getArmPosePx() {
     if (!this.armBody || !this.armTopLocalM) return null;
@@ -926,9 +945,13 @@ export default class PlayerSim {
 
   // Called by LobbyRoom each tick BEFORE world.step
   applyInput(input, fixedDt) {
+    // Fixed-step simulation time (ms), used for fire-rate limiting.
+    this._simTimeMs += Math.max(0, Number(fixedDt) || 0) * 1000;
+
     // ✅ If dead: no movement forces, no tilt/jump, no auto-aim, no firing.
     if (this.dead) {
       this.endMouseDrag();
+      this.fireHeld = false;
       this.lastFireSeq = Number(input?.fireSeq) | 0;
       return [];
     }
@@ -965,55 +988,90 @@ export default class PlayerSim {
 
     const events = [];
 
-    // fireSeq -> authoritative shot trigger
+    // ------------------------------------------------------------
+    // Guns (server authoritative)
+    // - `fireSeq` is a *press* edge (semi-auto behavior)
+    // - `fireHeld` enables continuous fire ONLY for guns with `automatic: true`
+    // - `timeBetweenShots` (ms) rate-limits both modes
+    // ------------------------------------------------------------
+
+    const def = this.gunCatalog?.[this.gunId] || null;
+    const timeBetweenShotsMs = Math.max(0, Number(def?.timeBetweenShots ?? 0) || 0);
+    const isAutomatic = !!def?.automatic;
+
+    // snapshot current held state (missing => false)
+    this.fireHeld = !!input?.fireHeld;
+
+    const canFireNow = () => this._simTimeMs >= this._nextShotMs;
+
+    const tryFireOnce = () => {
+      if (!def) return false;
+      if (this.ammo <= 0) return false;
+      if (!def.bulletEnabled) return false;
+      if (!canFireNow()) return false;
+
+      const gunIdFired = this.gunId;
+
+      this.ammo = Math.max(0, (this.ammo - 1) | 0);
+
+      const muzzle = this.computeGunMuzzleWorldPx();
+      const dir = this.getGunForwardUnit();
+
+      if (muzzle && dir) {
+        const maxDistPx = Math.max(10, Number(def.bulletMaxDistancePx ?? 2200));
+        const hit = this.raycastBeamHitPx(muzzle, dir, maxDistPx);
+        const endPx = hit.endPx;
+
+        events.push({
+          kind: "shot",
+          sx: muzzle.x,
+          sy: muzzle.y,
+          ex: endPx.x,
+          ey: endPx.y,
+          widthPx: Number(def.bulletWidthPx ?? 10),
+          lifeSec: Number(def.bulletLifetimeSec ?? 0.05),
+          tailLenPx: Number(def.bulletTailLengthPx ?? 200),
+          color: Number(def.bulletColor ?? 0xffffff),
+        });
+
+        const dmg = Number(def.damage ?? 0);
+        if (dmg > 0 && hit.hitSessionId && hit.hitSessionId !== this.sessionId) {
+          events.push({
+            kind: "damage",
+            to: hit.hitSessionId,
+            amount: dmg,
+            from: this.sessionId,
+            gunId: gunIdFired,
+            kx: dir.x,
+            ky: dir.y,
+            kb: Number(def.deathKnockbackPxPerSec ?? 0),
+            kbu: Number(def.deathKnockbackUpPxPerSec ?? 0),
+          });
+        }
+      }
+
+      // schedule next allowed shot time
+      this._nextShotMs = this._simTimeMs + timeBetweenShotsMs;
+
+      if (this.ammo <= 0) {
+        this.dropGun();
+      }
+
+      return true;
+    };
+
+    let firedThisTick = false;
+
+    // fireSeq -> press edge (semi-auto & first-shot for automatic)
     const fireSeq = Number(input?.fireSeq) | 0;
     if (fireSeq !== this.lastFireSeq) {
       this.lastFireSeq = fireSeq;
+      firedThisTick = tryFireOnce();
+    }
 
-      const def = this.gunCatalog?.[this.gunId];
-      if (def && this.ammo > 0 && def.bulletEnabled) {
-        this.ammo = Math.max(0, (this.ammo - 1) | 0);
-
-        const muzzle = this.computeGunMuzzleWorldPx();
-        const dir = this.getGunForwardUnit();
-
-        if (muzzle && dir) {
-          const maxDistPx = Math.max(10, Number(def.bulletMaxDistancePx ?? 2200));
-          const hit = this.raycastBeamHitPx(muzzle, dir, maxDistPx);
-          const endPx = hit.endPx;
-
-          events.push({
-            kind: "shot",
-            sx: muzzle.x,
-            sy: muzzle.y,
-            ex: endPx.x,
-            ey: endPx.y,
-            widthPx: Number(def.bulletWidthPx ?? 10),
-            lifeSec: Number(def.bulletLifetimeSec ?? 0.05),
-            tailLenPx: Number(def.bulletTailLengthPx ?? 200),
-            color: Number(def.bulletColor ?? 0xffffff),
-          });
-
-          const dmg = Number(def.damage ?? 0);
-          if (dmg > 0 && hit.hitSessionId && hit.hitSessionId !== this.sessionId) {
-            events.push({
-              kind: "damage",
-              to: hit.hitSessionId,
-              amount: dmg,
-              from: this.sessionId,
-              gunId: this.gunId,
-              kx: dir.x,
-              ky: dir.y,
-              kb: Number(def.deathKnockbackPxPerSec ?? 0),
-              kbu: Number(def.deathKnockbackUpPxPerSec ?? 0),
-            });
-          }
-        }
-
-        if (this.ammo <= 0) {
-          this.dropGun();
-        }
-      }
+    // automatic -> while held (rate-limited)
+    if (!firedThisTick && isAutomatic && this.fireHeld) {
+      firedThisTick = tryFireOnce();
     }
 
     // MOVEMENT
@@ -1059,97 +1117,114 @@ export default class PlayerSim {
       const angleNow = wrapRadPi(this.body.getAngle());
       const isTiltStartOrSwitch = this.prevTiltDir === 0 || tiltDir !== this.prevTiltDir;
 
-      if (isTiltStartOrSwitch) {
-        const pastMaxAbs = Math.abs(angleNow) > TILT_MAX_ANGLE_RAD + TILT_PAST_MAX_EPS_RAD;
-        if (pastMaxAbs) {
-          this.holdPastMaxActive = true;
-          this.holdPastMaxAngleRad = angleNow;
-        } else {
-          this.holdPastMaxActive = false;
-        }
-      }
-
-      let angleTarget = angleNow;
-
-      if (this.holdPastMaxActive) {
-        angleTarget = this.holdPastMaxAngleRad;
-      } else {
-        const deltaAng = tiltDir * TILT_ROTATE_SPEED_RAD_PER_SEC * fixedDt;
-        angleTarget = clamp(angleNow + deltaAng, -TILT_MAX_ANGLE_RAD, +TILT_MAX_ANGLE_RAD);
-      }
-
       const cornerHits = this.computeFootCornerGroundedByRays();
 
-      // ✅ Smooth corner contact to avoid one-frame flicker causing pivot snaps
-      if (cornerHits.leftHit) this.leftCornerGrace = CORNER_GRACE_TIME_SEC;
+      const leftGroundedNow = cornerHits.leftHit;
+      const rightGroundedNow = cornerHits.rightHit;
+
+      if (leftGroundedNow) this.leftCornerGrace = CORNER_GRACE_TIME_SEC;
       else this.leftCornerGrace = Math.max(0, this.leftCornerGrace - fixedDt);
 
-      if (cornerHits.rightHit) this.rightCornerGrace = CORNER_GRACE_TIME_SEC;
+      if (rightGroundedNow) this.rightCornerGrace = CORNER_GRACE_TIME_SEC;
       else this.rightCornerGrace = Math.max(0, this.rightCornerGrace - fixedDt);
 
       const leftGrounded = this.leftCornerGrace > 0;
       const rightGrounded = this.rightCornerGrace > 0;
 
-      // ✅ Rock around a continuous contact point on the foot bottom (no sideways snap)
+      const wantAngle = clamp(tiltDir * TILT_MAX_ANGLE_RAD, -TILT_MAX_ANGLE_RAD, +TILT_MAX_ANGLE_RAD);
+
+      const diff = wrapRadPi(wantAngle - angleNow);
+      let step = clamp(diff, -TILT_ROTATE_SPEED_RAD_PER_SEC * fixedDt, +TILT_ROTATE_SPEED_RAD_PER_SEC * fixedDt);
+
+      let angleTarget = wrapRadPi(angleNow + step);
+
+      const atMax = Math.abs(angleTarget) >= (TILT_MAX_ANGLE_RAD - TILT_PAST_MAX_EPS_RAD);
+      if (atMax) {
+        this.holdPastMaxActive = true;
+        this.holdPastMaxAngleRad = angleTarget;
+      } else {
+        if (this.holdPastMaxActive) {
+          if (Math.sign(angleTarget) !== Math.sign(this.holdPastMaxAngleRad)) {
+            this.holdPastMaxActive = false;
+          }
+        }
+      }
+
       this.applyTiltPinnedToFootContact(angleNow, angleTarget, leftGrounded, rightGrounded);
 
       this.prevTiltDir = tiltDir;
+
       return events;
     }
 
-    // No tilt -> balance
-    this.prevTiltDir = 0;
-    this.activePivotSide = 0;
-    this.holdPastMaxActive = false;
-    this.leftCornerGrace = 0;
-    this.rightCornerGrace = 0;
+    // auto-balance if grounded and not tilting
+    if (this.touchingGround && this.prevTiltDir === 0) {
+      const targetAngle = 0;
 
-    // ✅ Prevent the "weird rotation" right after jumping:
-    // while airborne for a brief moment after jump, do not apply balance torque.
-    if (this.justJumpedTimer > 0 && !this.touchingGround) {
-      this.body.setAngularVelocity(0);
-      return events;
+      // suppress in-air balance right after jump
+      const airMult = this.justJumpedTimer > 0 ? 0 : AIR_BALANCE_MULT;
+
+      const groundedMult = this.touchingGround ? 1 : airMult;
+
+      const torque = this.computePDTorqueWrapped(
+        targetAngle,
+        BALANCE_KP * groundedMult,
+        BALANCE_KD * groundedMult,
+        BALANCE_MAX_TORQUE
+      );
+
+      this.body.applyTorque(torque);
     }
 
-    const balanceTargetRad = (BALANCE_TARGET_ANGLE_DEG * Math.PI) / 180;
-    const strengthMult = this.touchingGround ? 1.0 : AIR_BALANCE_MULT;
-
-    const torque = this.computePDTorqueWrapped(
-      balanceTargetRad,
-      BALANCE_KP * strengthMult,
-      BALANCE_KD * strengthMult,
-      BALANCE_MAX_TORQUE
-    );
-
-    this.body.applyTorque(torque);
+    this.prevTiltDir = tiltDir;
 
     return events;
   }
 
+  // --------------------------
+  // State snapshot for LobbyRoom
+  // --------------------------
   getStateSnapshot() {
-    const p = this.body.getPosition();
+    const bp = this.body.getPosition();
 
-    const x = Math.round(this.mToPx(p.x));
-    const y = Math.round(this.mToPx(p.y));
+    const x = Math.round(this.mToPx(bp.x));
+    const y = Math.round(this.mToPx(bp.y));
     const a = this.body.getAngle();
 
+    const dir = this.facingDir;
+
     const armPose = this.getArmPosePx();
+    const armX = Math.round(armPose?.armX ?? x);
+    const armY = Math.round(armPose?.armY ?? y);
+    const armA = armPose?.armA ?? a;
+
     const gunPose = this.computeGunPosePx();
 
-    return {
-      x, y, a,
-      dir: this.facingDir,
+    const gunX = Math.round(gunPose?.gunX ?? 0);
+    const gunY = Math.round(gunPose?.gunY ?? 0);
+    const gunA = gunPose?.gunA ?? 0;
 
-      armX: armPose ? Math.round(armPose.armX) : x,
-      armY: armPose ? Math.round(armPose.armY) : y,
-      armA: armPose ? armPose.armA : a,
+    return {
+      x,
+      y,
+      a,
+
+      armX,
+      armY,
+      armA,
+
+      dir,
 
       gunId: this.gunId,
       ammo: this.ammo,
 
-      gunX: gunPose ? Math.round(gunPose.gunX) : 0,
-      gunY: gunPose ? Math.round(gunPose.gunY) : 0,
-      gunA: gunPose ? gunPose.gunA : 0,
+      maxHealth: 100,
+      health: 100,
+      dead: !!this.dead,
+
+      gunX,
+      gunY,
+      gunA,
     };
   }
 }

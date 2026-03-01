@@ -1,3 +1,4 @@
+// LobbyRoom.js
 // ============================================================
 // server/src/rooms/LobbyRoom.js
 // Server-authoritative physics + collisions + guns.
@@ -351,17 +352,24 @@ export default class LobbyRoom extends Room {
         const tiltLeft = !!(b & 1);
         const tiltRight = !!(b & 2);
         const dragActive = !!(b & 4);
+        const fireHeld = !!(b & 8);
 
         this.playerInputs.set(client.sessionId, {
           tiltLeft,
           tiltRight,
           dragActive,
+          fireHeld,
           dragX: dragActive ? Number(raw.x) : undefined,
           dragY: dragActive ? Number(raw.y) : undefined,
           fireSeq: Number(raw.f) | 0,
         });
       } else {
-        this.playerInputs.set(client.sessionId, raw);
+        // Non-compact/debug payload support
+        this.playerInputs.set(client.sessionId, {
+          ...raw,
+          fireHeld: !!raw.fireHeld,
+          fireSeq: Number(raw.fireSeq ?? raw.f) | 0,
+        });
       }
     });
 
@@ -759,6 +767,14 @@ export default class LobbyRoom extends Room {
       st.gunId = s.gunId;
       st.ammo = s.ammo;
 
+      // health authoritative
+      st.health = s.health;
+      st.maxHealth = s.maxHealth;
+
+      // dead/ragdoll flag authoritative
+      st.dead = s.dead;
+
+      // optional debug
       st.gunX = s.gunX;
       st.gunY = s.gunY;
       st.gunA = s.gunA;
@@ -766,29 +782,15 @@ export default class LobbyRoom extends Room {
 
     // 5) broadcast events
     for (const e of allEvents) {
+      if (!e) continue;
+
       if (e.kind === "shot") {
-        // Accept both old and new field names on the client.
-        if (e.w == null && e.widthPx != null) e.w = e.widthPx;
-        if (e.l == null && e.lifeSec != null) e.l = e.lifeSec;
-        if (e.t == null && e.tailLenPx != null) e.t = e.tailLenPx;
-        if (e.c == null && e.color != null) e.c = e.color;
-
         this.broadcast("shot", e);
-
       } else if (e.kind === "sound") {
-        const key = e.k ?? e.key;
-        const vol = e.v ?? e.volume ?? 1;
-        const rate = e.r ?? e.rate ?? 1;
-        this.broadcastSound(key, vol, rate);
-
+        this.broadcast("sound", e);
       } else if (e.kind === "soundDelayed") {
-        const delayMs = Math.max(0, Number(e.delaySec ?? 0)) * 1000;
-
-        const key = e.k ?? e.key;
-        const vol = e.v ?? e.volume ?? 1;
-        const rate = e.r ?? e.rate ?? 1;
-
-        setTimeout(() => this.broadcastSound(key, vol, rate), delayMs);
+        const delayMs = Math.max(0, Number(e.delaySec) || 0) * 1000;
+        setTimeout(() => this.broadcast("sound", e), delayMs);
       }
     }
   }
