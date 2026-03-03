@@ -158,6 +158,7 @@ export default class GameScene extends Phaser.Scene {
 
     this._reservation = null;
     this._clientFromMM = null;
+    this._roomFromMM = null;
 
     // username chosen in MainMenuScene (passed through MatchmakingScene)
     this._username = "Player";
@@ -190,6 +191,7 @@ export default class GameScene extends Phaser.Scene {
     // comes from MatchmakingScene
     this._reservation = data?.reservation ?? null;
     this._clientFromMM = data?.client ?? null;
+    this._roomFromMM = data?.room ?? null;
 
     const raw = data?.username;
     const name = String(raw ?? "")
@@ -299,7 +301,12 @@ export default class GameScene extends Phaser.Scene {
       // reuse client from matchmaking if provided, otherwise create our own
       this.client = this._clientFromMM || new Client(COLYSEUS_URL);
 
-      if (this._reservation) {
+      // NEW:
+      // If MatchmakingScene already consumed the seat reservation, we'll get
+      // an already-joined Room instance in data.room. Use it and skip joining.
+      if (this._roomFromMM) {
+        this.room = this._roomFromMM;
+      } else if (this._reservation) {
         this.room = await this.client.consumeSeatReservation(this._reservation);
       } else {
         // fallback (shouldn't happen in normal flow)
@@ -571,6 +578,7 @@ export default class GameScene extends Phaser.Scene {
 
     this._reservation = null;
     this._clientFromMM = null;
+    this._roomFromMM = null;
   }
 
   sendInput(deltaSec) {

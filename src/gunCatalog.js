@@ -26,7 +26,7 @@ export const GUN_CATALOG = {
     heldAngleOffsetRad: Math.PI / 2,
     heldFlipWithPlayer: true,
 
-    ammo: 5,
+    ammo: 50,
 
     aimRadiusPx: 900,
     autoAimSpeedDegPerSec: 300,
@@ -41,7 +41,7 @@ export const GUN_CATALOG = {
     automatic: true,
 
     // Minimum milliseconds between shots (server authoritative).
-    timeBetweenShots: 500,
+    timeBetweenShots: 60,
 
     // ✅ Death-only knockback (ONLY applied if this hit kills)
     deathKnockbackPxPerSec: 2000,     // main push strength

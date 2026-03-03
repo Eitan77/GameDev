@@ -231,15 +231,37 @@ export default class MatchmakingScene extends Phaser.Scene {
       this._setQueueText(MATCH_SIZE);
       this._setSlots(MATCH_SIZE);
 
+      // IMPORTANT:
+      // Join the actual lobby room *immediately* from this websocket callback.
+      // This is NOT gated behind Phaser's scene transition, so it still runs
+      // even if the tab is hidden and Phaser is paused.
+      let gameRoom = null;
+      try {
+        gameRoom = await this.client.consumeSeatReservation(reservation);
+      } catch (e) {
+        console.error("Failed to consume seat reservation:", e);
+        this.queueText?.setText("Failed to join");
+        this.subText?.setText("Please try again.");
+
+        // allow cancel again
+        this._starting = false;
+        this.cancelBtn?.setInteractive({ useHandCursor: true });
+        this.cancelBtn?.setFillStyle(0x2d3342, 1);
+        this.cancelBtn?.setStrokeStyle(3, 0xffffff, 0.3);
+        this.cancelText?.setAlpha(1);
+        return;
+      }
+
+      // We successfully joined the lobby; now we can leave matchmaking.
       try {
         await this.mmRoom?.leave();
       } catch (_) {}
 
       this.mmRoom = null;
 
-      // hand off the client + reservation to GameScene
+      // hand off the already-joined room to GameScene
       this._handedOff = true;
-      this.scene.start("GameScene", { reservation, client: this.client, username: this.username });
+      this.scene.start("GameScene", { room: gameRoom, client: this.client, username: this.username });
     });
   }
 
