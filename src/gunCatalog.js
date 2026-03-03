@@ -31,7 +31,7 @@ export const GUN_CATALOG = {
     aimRadiusPx: 900,
     autoAimSpeedDegPerSec: 300,
 
-    damage: 50,
+    damage: 5,
 
     // --------------------
     // Fire behavior

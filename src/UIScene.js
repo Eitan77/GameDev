@@ -2,7 +2,7 @@
 // UIScene.js
 // HUD overlay Scene.
 // - Draws UI in screen-space (no camera jitter, no zoom math).
-// - Health bar: bottom-left
+// - Health display: bottom-left (IMAGE BAR + 40 MARKERS)
 // - Round timer: top-center (pixel-art digits)
 //
 // Timer art filenames expected in your client public assets:
@@ -12,30 +12,45 @@
 //
 // Server timer source (Colyseus state):
 //   room.state.roundTimeLeftSec  (uint16)
+//
+// HEALTH BAR IMAGES expected in your client public assets:
+//   assets/images/New Project (10).png   (blank bar background with heart)
+//   assets/images/New Project (13).png   (10x80 red marker segment)
 // ============================================================
 
 import Phaser from "phaser";
 
 // ------------------------------
-// Health bar style (matches your old bar)
+// Health bar images
 // ------------------------------
-const HEALTH_BAR_W_PX = 70;
-const HEALTH_BAR_H_PX = 10;
+const HEALTH_BG_KEY = "health_bar_blank";
+const HEALTH_SEG_KEY = "health_marker";
 
-const HEALTH_BAR_BORDER_COLOR = 0x000000;
-const HEALTH_BAR_BORDER_ALPHA = 0.9;
+// Use encodeURI() so spaces in filenames load correctly in the browser.
+const HEALTH_BG_SRC = "assets/images/New Project (10).png";
+const HEALTH_SEG_SRC = "assets/images/New Project (13).png";
 
-const HEALTH_BAR_BG_COLOR = 0x202020;
-const HEALTH_BAR_BG_ALPHA = 0.85;
-
-const HEALTH_BAR_FILL_COLOR = 0x00ff00;
-const HEALTH_BAR_FILL_ALPHA = 0.95;
+// 40 markers total
+const HEALTH_SEG_COUNT = 40;
 
 // ------------------------------
-// HUD placement
+// HEALTH BAR TWEAK KNOBS
 // ------------------------------
-const HUD_MARGIN_X_PX = 24;
-const HUD_MARGIN_Y_PX = 24;
+// Scales the WHOLE health bar (background + markers).
+const HEALTH_UI_SCALE = 0.5;
+
+// Bottom-left corner in screen pixels.
+// Increase X to move right. Increase Y to move UP.
+const HEALTH_UI_BL_X = 24;
+const HEALTH_UI_BL_Y = 24;
+
+// Inner white box in the background image (pixel coords in the source image).
+// For New Project (10).png (587x149), the inner white box is exactly 400x80.
+// These values were measured from the image itself.
+const HEALTH_INNER_X0 = 178;
+const HEALTH_INNER_Y0 = 36;
+const HEALTH_INNER_W = 400;
+const HEALTH_INNER_H = 80;
 
 // ------------------------------
 // Round timer placement
@@ -61,9 +76,10 @@ export default class UIScene extends Phaser.Scene {
     // Which gameplay scene to read data from (set by GameScene.ensureUIScene()).
     this.gameSceneKey = "GameScene";
 
-    // Health HUD
+    // Health HUD (image-based)
     this.healthBar = null; // container
-    this.healthFill = null; // rect
+    this.healthBg = null; // background image
+    this.healthMarkers = []; // array of 40 marker images
 
     // Timer HUD (pixel art)
     this.timerContainer = null; // container
@@ -96,6 +112,14 @@ export default class UIScene extends Phaser.Scene {
 
     if (!this.textures.exists("timer_colon")) {
       this.load.image("timer_colon", "assets/images/timer_colon.png");
+    }
+
+    // Health bar images
+    if (!this.textures.exists(HEALTH_BG_KEY)) {
+      this.load.image(HEALTH_BG_KEY, encodeURI(HEALTH_BG_SRC));
+    }
+    if (!this.textures.exists(HEALTH_SEG_KEY)) {
+      this.load.image(HEALTH_SEG_KEY, encodeURI(HEALTH_SEG_SRC));
     }
   }
 
@@ -134,7 +158,8 @@ export default class UIScene extends Phaser.Scene {
     } catch (_) {}
 
     this.healthBar = null;
-    this.healthFill = null;
+    this.healthBg = null;
+    this.healthMarkers = [];
 
     this.timerContainer = null;
     this.timerSprites = [];
@@ -142,36 +167,61 @@ export default class UIScene extends Phaser.Scene {
   }
 
   // -----------------------------
-  // Health bar creation
+  // Health bar creation (IMAGE + 40 MARKERS)
   // -----------------------------
   createHealthBar() {
-    const plate = this.add
-      .rectangle(
-        0,
-        0,
-        HEALTH_BAR_W_PX + 2,
-        HEALTH_BAR_H_PX + 2,
-        HEALTH_BAR_BORDER_COLOR,
-        HEALTH_BAR_BORDER_ALPHA
-      )
-      .setOrigin(0.5, 0.5);
+    // Force pixel-art filtering (prevents seams/blur when scaling).
+    try {
+      this.textures.get(HEALTH_BG_KEY).setFilter(Phaser.Textures.FilterMode.NEAREST);
+      this.textures.get(HEALTH_SEG_KEY).setFilter(Phaser.Textures.FilterMode.NEAREST);
+    } catch (_) {
+      // If Phaser version differs, ignore — camera roundPixels still helps.
+    }
 
-    const bg = this.add
-      .rectangle(0, 0, HEALTH_BAR_W_PX, HEALTH_BAR_H_PX, HEALTH_BAR_BG_COLOR, HEALTH_BAR_BG_ALPHA)
-      .setOrigin(0.5, 0.5);
+    // Background (heart + empty bar)
+    this.healthBg = this.add.image(0, 0, HEALTH_BG_KEY);
+    this.healthBg.setOrigin(0.5, 0.5);
 
-    this.healthFill = this.add
-      .rectangle(
-        -HEALTH_BAR_W_PX / 2,
-        0,
-        HEALTH_BAR_W_PX,
-        HEALTH_BAR_H_PX,
-        HEALTH_BAR_FILL_COLOR,
-        HEALTH_BAR_FILL_ALPHA
-      )
-      .setOrigin(0, 0.5);
+    // Source sizes (not display sizes)
+    const bgW = this.healthBg.width;
+    const bgH = this.healthBg.height;
 
-    this.healthBar = this.add.container(0, 0, [plate, bg, this.healthFill]);
+    // Inner rect in LOCAL coords (relative to bg center)
+    const innerLeft = -bgW / 2 + HEALTH_INNER_X0;
+    const innerTop = -bgH / 2 + HEALTH_INNER_Y0;
+
+    const innerW = HEALTH_INNER_W;
+    const innerH = HEALTH_INNER_H;
+
+    // Marker texture is exactly 10x80 (per your image)
+    const markerW = 10;
+    const markerH = 80;
+
+    // Vertical center of the inner box
+    const innerCenterY = innerTop + innerH / 2;
+
+    // Create 40 marker images and place them left-to-right inside the inner box
+    this.healthMarkers = [];
+    for (let i = 0; i < HEALTH_SEG_COUNT; i++) {
+      const m = this.add.image(0, 0, HEALTH_SEG_KEY);
+
+      // Left-anchored, vertically centered
+      m.setOrigin(0, 0.5);
+
+      // No per-marker scaling needed (10x80 fits perfectly)
+      m.setScale(1, 1);
+
+      // Exact 10px step: 40 * 10 = 400 (perfect fit)
+      m.x = Math.round(innerLeft + i * markerW);
+      m.y = Math.round(innerCenterY);
+
+      m.setVisible(false);
+      this.healthMarkers.push(m);
+    }
+
+    // Put bg + markers into one container and scale the whole thing with ONE knob
+    this.healthBar = this.add.container(0, 0, [this.healthBg, ...this.healthMarkers]);
+    this.healthBar.setScale(HEALTH_UI_SCALE);
     this.healthBar.setVisible(false);
   }
 
@@ -264,17 +314,18 @@ export default class UIScene extends Phaser.Scene {
     // -------------------------
     // Health bar (local player)
     // -------------------------
-    // ✅ Keep the health bar visible even when the player is dead (it will show 0).
     if (!localPlayer) {
       if (this.healthBar) this.healthBar.setVisible(false);
-    } else if (this.healthBar && this.healthFill) {
+    } else if (this.healthBar && this.healthBg && this.healthMarkers.length === HEALTH_SEG_COUNT) {
       // Position once when resized
       if (force || w !== this._lastW || h !== this._lastH) {
-        const barW = HEALTH_BAR_W_PX + 2;
-        const barH = HEALTH_BAR_H_PX + 2;
+        // Use SOURCE size * container scale (container scaling doesn't change child displayWidth).
+        const barW = this.healthBg.width * HEALTH_UI_SCALE;
+        const barH = this.healthBg.height * HEALTH_UI_SCALE;
 
-        this.healthBar.x = Math.round(HUD_MARGIN_X_PX + barW / 2);
-        this.healthBar.y = Math.round(h - HUD_MARGIN_Y_PX - barH / 2);
+        // Bottom-left anchor (tweak HEALTH_UI_BL_X / HEALTH_UI_BL_Y)
+        this.healthBar.x = Math.round(HEALTH_UI_BL_X + barW / 2);
+        this.healthBar.y = Math.round(h - HEALTH_UI_BL_Y - barH / 2);
 
         this._lastW = w;
         this._lastH = h;
@@ -284,8 +335,15 @@ export default class UIScene extends Phaser.Scene {
       const hp = Math.max(0, Math.min(mh, Number(localPlayer.health) || 0));
       const ratio = clamp01(hp / mh);
 
-      this.healthFill.width = HEALTH_BAR_W_PX * ratio;
-      this.healthFill.x = -HEALTH_BAR_W_PX / 2;
+      // Markers shown: 0..40
+      let shown = Math.floor(ratio * HEALTH_SEG_COUNT);
+      if (hp >= mh) shown = HEALTH_SEG_COUNT;
+      if (shown < 0) shown = 0;
+      if (shown > HEALTH_SEG_COUNT) shown = HEALTH_SEG_COUNT;
+
+      for (let i = 0; i < HEALTH_SEG_COUNT; i++) {
+        this.healthMarkers[i].setVisible(i < shown);
+      }
 
       this.healthBar.setVisible(true);
     }
@@ -311,8 +369,6 @@ export default class UIScene extends Phaser.Scene {
     if (force || changed || (this.timerContainer && this.timerContainer.y === 0)) {
       this.layoutTimer(w);
     }
-
-    // When it hits 0:00, do nothing yet (per your request)
   }
 
   update() {

@@ -767,9 +767,10 @@ export default class LobbyRoom extends Room {
       st.gunId = s.gunId;
       st.ammo = s.ammo;
 
-      // health authoritative
-      st.health = s.health;
-      st.maxHealth = s.maxHealth;
+      // ✅ Health is server authoritative.
+      // It is updated in this.fixedStep() via damage + respawn logic.
+      // Do NOT overwrite it from PlayerSim.getStateSnapshot(), which is only
+      // for physics/pose (and may not track health).
 
       // dead/ragdoll flag authoritative
       st.dead = s.dead;
