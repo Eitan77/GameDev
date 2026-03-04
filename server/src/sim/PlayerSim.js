@@ -1157,23 +1157,26 @@ export default class PlayerSim {
       return events;
     }
 
-    // auto-balance if grounded and not tilting
-    if (this.touchingGround && this.prevTiltDir === 0) {
+    // auto-balance when NOT actively tilting
+    // - On ground: full strength
+    // - In air: reduced strength (AIR_BALANCE_MULT)
+    // - Right after jump: suppress in-air balance briefly to avoid weird mid-air spin
+    if (this.prevTiltDir === 0) {
       const targetAngle = 0;
 
-      // suppress in-air balance right after jump
       const airMult = this.justJumpedTimer > 0 ? 0 : AIR_BALANCE_MULT;
+      const mult = this.touchingGround ? 1 : airMult;
 
-      const groundedMult = this.touchingGround ? 1 : airMult;
+      if (mult > 0) {
+        const torque = this.computePDTorqueWrapped(
+          targetAngle,
+          BALANCE_KP * mult,
+          BALANCE_KD * mult,
+          BALANCE_MAX_TORQUE
+        );
 
-      const torque = this.computePDTorqueWrapped(
-        targetAngle,
-        BALANCE_KP * groundedMult,
-        BALANCE_KD * groundedMult,
-        BALANCE_MAX_TORQUE
-      );
-
-      this.body.applyTorque(torque);
+        this.body.applyTorque(torque);
+      }
     }
 
     this.prevTiltDir = tiltDir;
