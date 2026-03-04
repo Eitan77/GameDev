@@ -158,6 +158,8 @@ export default class GameScene extends Phaser.Scene {
 
     this._reservation = null;
     this._clientFromMM = null;
+
+    // If MatchmakingScene already consumed the reservation, we get the live Room instance here.
     this._roomFromMM = null;
 
     // username chosen in MainMenuScene (passed through MatchmakingScene)
@@ -191,6 +193,8 @@ export default class GameScene extends Phaser.Scene {
     // comes from MatchmakingScene
     this._reservation = data?.reservation ?? null;
     this._clientFromMM = data?.client ?? null;
+
+    // New (preferred) flow: MatchmakingScene consumes the seat reservation immediately.
     this._roomFromMM = data?.room ?? null;
 
     const raw = data?.username;
@@ -301,12 +305,11 @@ export default class GameScene extends Phaser.Scene {
       // reuse client from matchmaking if provided, otherwise create our own
       this.client = this._clientFromMM || new Client(COLYSEUS_URL);
 
-      // NEW:
-      // If MatchmakingScene already consumed the seat reservation, we'll get
-      // an already-joined Room instance in data.room. Use it and skip joining.
       if (this._roomFromMM) {
+        // ✅ Preferred flow: we already joined the room (even if this tab was in the background).
         this.room = this._roomFromMM;
       } else if (this._reservation) {
+        // Back-compat flow: join here if we were handed only a reservation.
         this.room = await this.client.consumeSeatReservation(this._reservation);
       } else {
         // fallback (shouldn't happen in normal flow)
@@ -335,12 +338,13 @@ export default class GameScene extends Phaser.Scene {
     this.scale.on("resize", () => this.applyCameraTuning());
 
     // --- State bindings (players) ---
-    this.callbacks.onAdd("players", (playerState, sessionId) => {
+    const handlePlayerAdded = (playerState, sessionId, { allowReplace } = { allowReplace: true }) => {
       const isLocal = sessionId === this.room.sessionId;
 
       // prevent duplicate sprites (ghost look)
       const existing = this.players.get(sessionId);
       if (existing) {
+        if (!allowReplace) return;
         existing.destroy();
         this.players.delete(sessionId);
       }
@@ -396,6 +400,10 @@ export default class GameScene extends Phaser.Scene {
           this.callbacks.listen(playerState, k, refresh);
         });
       }
+    };
+
+    this.callbacks.onAdd("players", (playerState, sessionId) => {
+      handlePlayerAdded(playerState, sessionId, { allowReplace: true });
     });
 
     this.callbacks.onRemove("players", (_playerState, sessionId) => {
@@ -412,9 +420,10 @@ export default class GameScene extends Phaser.Scene {
     });
 
     // --- State bindings (powerups) ---
-    this.callbacks.onAdd("powerUps", (puState, puId) => {
+    const handlePowerUpAdded = (puState, puId, { allowReplace } = { allowReplace: true }) => {
       const existing = this.powerUps.get(puId);
       if (existing) {
+        if (!allowReplace) return;
         try {
           existing.destroy?.();
         } catch (_) {}
@@ -434,6 +443,10 @@ export default class GameScene extends Phaser.Scene {
         this.callbacks.listen(puState, "x", (x) => view.setPosition(Number(x) || 0, view.sprite?.y ?? 0));
         this.callbacks.listen(puState, "y", (y) => view.setPosition(view.sprite?.x ?? 0, Number(y) || 0));
       }
+    };
+
+    this.callbacks.onAdd("powerUps", (puState, puId) => {
+      handlePowerUpAdded(puState, puId, { allowReplace: true });
     });
 
     this.callbacks.onRemove("powerUps", (_puState, puId) => {
@@ -455,6 +468,28 @@ export default class GameScene extends Phaser.Scene {
 
       this.sound.play(key, { volume, rate });
     });
+
+    // ✅ If we joined the room earlier (in MatchmakingScene), the state may already contain
+    // players/powerups before these callbacks were attached. Bootstrap anything we don't have yet.
+    try {
+      const st = this.room?.state;
+      const players = st?.players;
+      const powerUps = st?.powerUps;
+
+      if (players && typeof players.forEach === "function") {
+        players.forEach((playerState, sessionId) => {
+          handlePlayerAdded(playerState, sessionId, { allowReplace: false });
+        });
+      }
+
+      if (powerUps && typeof powerUps.forEach === "function") {
+        powerUps.forEach((puState, puId) => {
+          handlePowerUpAdded(puState, puId, { allowReplace: false });
+        });
+      }
+    } catch (e) {
+      console.warn("Failed to bootstrap existing room state:", e);
+    }
   }
 
   // create an image at each Tiled point in "PlayerSpawnPoints" (no collision)

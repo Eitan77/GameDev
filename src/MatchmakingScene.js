@@ -204,7 +204,9 @@ export default class MatchmakingScene extends Phaser.Scene {
 
   async connectToMatchmaking() {
     this.client = new Client(COLYSEUS_URL);
-    this.mmRoom = await this.client.joinOrCreate(MATCHMAKING_ROOM);
+    // Pass username as join options so the server can attach it to the reservation (and/or store it).
+    // Safe even if the server ignores it.
+    this.mmRoom = await this.client.joinOrCreate(MATCHMAKING_ROOM, { username: this.username });
 
     this._setQueueText(1);
     this._setSlots(1);
@@ -231,35 +233,39 @@ export default class MatchmakingScene extends Phaser.Scene {
       this._setQueueText(MATCH_SIZE);
       this._setSlots(MATCH_SIZE);
 
-      // IMPORTANT:
-      // Join the actual lobby room *immediately* from this websocket callback.
-      // This is NOT gated behind Phaser's scene transition, so it still runs
-      // even if the tab is hidden and Phaser is paused.
+      // ✅ IMPORTANT FIX:
+      // Consume the seat reservation IMMEDIATELY.
+      // If we wait until GameScene.create(), background tabs can be throttled/paused
+      // and they won't actually join the match room until you focus the tab.
       let gameRoom = null;
       try {
         gameRoom = await this.client.consumeSeatReservation(reservation);
-      } catch (e) {
-        console.error("Failed to consume seat reservation:", e);
-        this.queueText?.setText("Failed to join");
-        this.subText?.setText("Please try again.");
 
-        // allow cancel again
-        this._starting = false;
-        this.cancelBtn?.setInteractive({ useHandCursor: true });
-        this.cancelBtn?.setFillStyle(0x2d3342, 1);
-        this.cancelBtn?.setStrokeStyle(3, 0xffffff, 0.3);
-        this.cancelText?.setAlpha(1);
+        // Send the name ASAP so other players see it even if this tab hasn't rendered yet.
+        try {
+          gameRoom.send("setName", { name: this.username });
+        } catch (_) {}
+      } catch (err) {
+        console.error("Failed to consume seat reservation:", err);
+
+        // Best-effort leave matchmaking room.
+        try {
+          await this.mmRoom?.leave();
+        } catch (_) {}
+
+        this.mmRoom = null;
+        this.client = null;
+        this.scene.start("MainMenuScene");
         return;
       }
 
-      // We successfully joined the lobby; now we can leave matchmaking.
       try {
         await this.mmRoom?.leave();
       } catch (_) {}
 
       this.mmRoom = null;
 
-      // hand off the already-joined room to GameScene
+      // hand off the already-joined game room to GameScene
       this._handedOff = true;
       this.scene.start("GameScene", { room: gameRoom, client: this.client, username: this.username });
     });
