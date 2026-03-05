@@ -33,7 +33,16 @@ export default class MainMenuScene extends Phaser.Scene {
 
     this._titleText = null;
     this._buttonContainer = null;
+    this._btnImg = null;
+    this._btnBaseY = 0;
+    this._btnPressed = false;
+    this._btnPushOffset = 0;
     this._statusText = null;
+  }
+
+  preload() {
+    this.load.image("btn_unpushed", "assets/images/StartButtonUnpushed.png");
+    this.load.image("btn_pushed",   "assets/images/StartButtonPushed.png");
   }
 
   create() {
@@ -83,39 +92,54 @@ export default class MainMenuScene extends Phaser.Scene {
     });
 
     // -------------------------------
-    // START button
+    // START button (pixel-art image)
     // -------------------------------
-    const btnW = 260;
-    const btnH = 90;
+    // Scale 3× so the pixel art is crisp and large enough.
+    // Unpushed: 99×35 → 297×105  |  Pushed: 99×33 → 297×99
+    // The 2px height difference is the drop-shadow being compressed.
+    // On press we switch texture AND nudge Y down by 6px (2px × 3)
+    // so the button face stays anchored to the same position.
+    const BTN_SCALE = 1;
+    const BTN_PUSH_OFFSET_Y = 2 * BTN_SCALE; // pixels to shift down when pressed
 
-    const btnBg = this.add.rectangle(0, 0, btnW, btnH, 0x2d3342, 1);
-    btnBg.setStrokeStyle(4, 0xffffff, 0.9);
+    this._btnImg = this.add.image(0, 0, "btn_unpushed");
+    this._btnImg.setScale(BTN_SCALE);
+    this._btnImg.setOrigin(0.5, 0.5);
+    this._btnImg.setInteractive({ useHandCursor: true });
+    this._btnPushOffset = BTN_PUSH_OFFSET_Y;
+    this._btnPressed = false;
 
-    const btnText = this.add
-      .text(0, 0, "START", {
-        fontFamily: "Arial, sans-serif",
-        fontSize: "34px",
-        color: "#ffffff",
-      })
-      .setOrigin(0.5);
-
-    this._buttonContainer = this.add.container(0, 0, [btnBg, btnText]);
-
-    btnBg.setInteractive({ useHandCursor: true });
-
-    btnBg.on("pointerover", () => {
-      if (this._starting) return;
-      btnBg.setFillStyle(0x3a4256, 1);
-      btnBg.setStrokeStyle(4, 0xffffff, 1);
+    this._btnImg.on("pointerover", () => {
+      // no visual change on hover for pixel-art buttons — feel free to add a tint
     });
 
-    btnBg.on("pointerout", () => {
+    this._btnImg.on("pointerdown", () => {
       if (this._starting) return;
-      btnBg.setFillStyle(0x2d3342, 1);
-      btnBg.setStrokeStyle(4, 0xffffff, 0.9);
+      this._btnPressed = true;
+      this._btnImg.setTexture("btn_pushed");
+      // shift down so the button face (top of the shadow) stays in place
+      this._btnImg.y = this._btnBaseY + this._btnPushOffset;
     });
 
-    btnBg.on("pointerdown", () => this.startGame());
+    const releaseBtn = () => {
+      if (!this._btnPressed) return;
+      this._btnPressed = false;
+      this._btnImg.setTexture("btn_unpushed");
+      this._btnImg.y = this._btnBaseY;
+    };
+
+    this._btnImg.on("pointerup", () => {
+      if (this._starting) return;
+      releaseBtn();
+      this.startGame();
+    });
+
+    this._btnImg.on("pointerout", () => {
+      releaseBtn();
+    });
+
+    // _buttonContainer kept as a single ref for layout()
+    this._buttonContainer = this._btnImg;
 
     // -------------------------------
     // Status text
@@ -180,7 +204,15 @@ export default class MainMenuScene extends Phaser.Scene {
     this._nameBg?.setPosition(cx, cy - 105);
     this._nameText?.setPosition(cx, cy - 105);
 
-    this._buttonContainer?.setPosition(cx, cy);
+    // Track base Y separately so the push-down offset stays correct after resize
+    this._btnBaseY = cy;
+    if (this._btnImg) {
+      this._btnImg.x = cx;
+      this._btnImg.y = this._btnPressed
+        ? this._btnBaseY + this._btnPushOffset
+        : this._btnBaseY;
+    }
+
     this._statusText?.setPosition(cx, cy + 120);
   }
 

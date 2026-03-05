@@ -34,19 +34,11 @@ export const GUN_CATALOG = {
 
     damage: 5,
 
-    // --------------------
-    // Fire behavior
-    // --------------------
-    // If true: holding the fire button will continuously fire.
-    // If false: you must release and re-press (semi-auto behavior).
     automatic: true,
-
-    // Minimum milliseconds between shots (server authoritative).
     timeBetweenShots: 60,
 
-    // ✅ Death-only knockback (ONLY applied if this hit kills)
-    deathKnockbackPxPerSec: 2000,     // main push strength
-    deathKnockbackUpPxPerSec: 160,    // extra upward pop (optional)
+    deathKnockbackPxPerSec: 2000,
+    deathKnockbackUpPxPerSec: 160,
 
     pickupSoundKey: "sniper_pickup_snd",
     pickupSoundPath: "assets/audio/sniper_pickup.mp3",
@@ -64,6 +56,7 @@ export const GUN_CATALOG = {
     reloadSoundRate: 1.0,
 
     fireToReloadDelaySec: 0.5,
+    shotsPerReload: 5,
 
     bulletEnabled: true,
     bulletWidthPx: 10,
@@ -81,6 +74,7 @@ export const GUN_CATALOG = {
   rifle: {
     id: "rifle",
 
+    // Reuses sniper images until rifle art is ready
     pickupKey: "rifle_pickup",
     pickupPath: "assets/images/rifle_pickup.png",
     pickupWpx: 140,
@@ -90,8 +84,8 @@ export const GUN_CATALOG = {
     heldPath: "assets/images/rifle_held.png",
     heldWpx: 140,
     heldHpx: 48,
-    heldDepth: 7,
-    heldOriginX: 0.19,
+    heldDepth: 5,
+    heldOriginX: 0.21,
     heldOriginY: 0.8,
     heldAlongArmOffsetPx: -12,
     heldSideOffsetPx: 0,
@@ -105,14 +99,12 @@ export const GUN_CATALOG = {
 
     damage: 3,
 
-    // Fast automatic fire
     automatic: true,
     timeBetweenShots: 100,
 
     deathKnockbackPxPerSec: 1400,
     deathKnockbackUpPxPerSec: 120,
 
-    // Reuse sniper sounds
     pickupSoundKey: "sniper_pickup_snd",
     pickupSoundPath: "assets/audio/sniper_pickup.mp3",
     pickupSoundVolume: 0.7,
@@ -129,6 +121,7 @@ export const GUN_CATALOG = {
     reloadSoundRate: 1.1,
 
     fireToReloadDelaySec: 0.3,
+    shotsPerReload: 5,
 
     bulletEnabled: true,
     bulletWidthPx: 8,
@@ -146,17 +139,18 @@ export const GUN_CATALOG = {
   shotgun: {
     id: "shotgun",
 
+    // Reuses sniper images until shotgun art is ready
     pickupKey: "shotgun_pickup",
     pickupPath: "assets/images/shotgun_pickup.png",
     pickupWpx: 140,
-    pickupHpx: 48,
+    pickupHpx: 40,
 
     heldKey: "shotgun_held",
     heldPath: "assets/images/shotgun_held.png",
     heldWpx: 140,
-    heldHpx: 48,
-    heldDepth: 7,
-    heldOriginX: 0.19,
+    heldHpx: 40,
+    heldDepth: 5,
+    heldOriginX: 0.22,
     heldOriginY: 0.8,
     heldAlongArmOffsetPx: -12,
     heldSideOffsetPx: 0,
@@ -170,14 +164,12 @@ export const GUN_CATALOG = {
 
     damage: 12,
 
-    // Slow semi-auto: must re-press between shots
     automatic: false,
     timeBetweenShots: 700,
 
     deathKnockbackPxPerSec: 3000,
     deathKnockbackUpPxPerSec: 300,
 
-    // Reuse sniper sounds (pitched down for a heavier feel)
     pickupSoundKey: "sniper_pickup_snd",
     pickupSoundPath: "assets/audio/sniper_pickup.mp3",
     pickupSoundVolume: 0.8,
@@ -194,6 +186,7 @@ export const GUN_CATALOG = {
     reloadSoundRate: 0.8,
 
     fireToReloadDelaySec: 0.8,
+    shotsPerReload: 2,
 
     bulletEnabled: true,
     bulletWidthPx: 14,
@@ -210,9 +203,16 @@ export const GUN_CATALOG = {
 };
 
 export function preloadGuns(scene) {
+  const loadedKeys = new Set();
   for (const g of Object.values(GUN_CATALOG)) {
-    scene.load.image(g.pickupKey, g.pickupPath);
-    scene.load.image(g.heldKey, g.heldPath);
+    if (!loadedKeys.has(g.pickupKey)) {
+      scene.load.image(g.pickupKey, g.pickupPath);
+      loadedKeys.add(g.pickupKey);
+    }
+    if (!loadedKeys.has(g.heldKey)) {
+      scene.load.image(g.heldKey, g.heldPath);
+      loadedKeys.add(g.heldKey);
+    }
 
     scene.load.audio(g.pickupSoundKey, g.pickupSoundPath);
     scene.load.audio(g.fireSoundKey, g.fireSoundPath);

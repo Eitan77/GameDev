@@ -33,7 +33,7 @@ export const NET_SEND_HZ = 60;
 // ------------------------------------------------------------
 // Camera tuning
 // ------------------------------------------------------------
-const CAMERA_ZOOM = 1;
+const CAMERA_ZOOM = 1.05;
 
 const CAMERA_FOLLOW_LERP_X = 1;
 const CAMERA_FOLLOW_LERP_Y = 1;

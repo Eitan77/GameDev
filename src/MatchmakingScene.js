@@ -32,6 +32,9 @@ export default class MatchmakingScene extends Phaser.Scene {
     // username passed from MainMenuScene
     this.username = "Player";
 
+    // track how many players are in the queue (including self)
+    this._queueCount = 1;
+
     // safe resize handler storage (prevents calling layout after scene is destroyed)
     this._onResize = null;
   }
@@ -173,6 +176,8 @@ export default class MatchmakingScene extends Phaser.Scene {
     const f = Math.max(0, Math.min(MATCH_SIZE, Number(found) || 0));
     const missing = MATCH_SIZE - f;
 
+    this._queueCount = f;
+
     this.queueText?.setText(`In que ${f}/${MATCH_SIZE}`);
 
     if (missing <= 0) this.subText?.setText("Match found! Starting...");
@@ -265,9 +270,15 @@ export default class MatchmakingScene extends Phaser.Scene {
 
       this.mmRoom = null;
 
-      // hand off the already-joined game room to GameScene
+      // hand off the already-joined game room to InterimScene,
+      // which preloads all assets then transitions to GameScene.
       this._handedOff = true;
-      this.scene.start("GameScene", { room: gameRoom, client: this.client, username: this.username });
+      this.scene.start("InterimScene", {
+        room:        gameRoom,
+        client:      this.client,
+        username:    this.username,
+        playerCount: this._queueCount,
+      });
     });
   }
 
