@@ -22,7 +22,6 @@ import { Callbacks } from "@colyseus/schema";
 import GameMap from "./GameMap.js";
 import Player from "./player.js";
 import GunPowerUp from "./GunPowerUp.js";
-import SniperGunPowerUp from "./SniperGunPowerUp.js";
 import { preloadGuns } from "./gunCatalog.js";
 
 // connects to same host (works on LAN)
@@ -439,6 +438,9 @@ export default class GameScene extends Phaser.Scene {
       if (puState && Object.prototype.hasOwnProperty.call(puState, "onChange")) {
         puState.onChange = (changes) => view.applyStateChanges(changes, puState);
       } else {
+        this.callbacks.listen(puState, "type", (type) => {
+          if (typeof view.setGunType === "function") view.setGunType(type);
+        });
         this.callbacks.listen(puState, "active", (active) => view.setActive(!!active));
         this.callbacks.listen(puState, "x", (x) => view.setPosition(Number(x) || 0, view.sprite?.y ?? 0));
         this.callbacks.listen(puState, "y", (y) => view.setPosition(view.sprite?.x ?? 0, Number(y) || 0));
@@ -538,9 +540,6 @@ export default class GameScene extends Phaser.Scene {
 
   createPowerUpView(puState) {
     const type = puState?.type;
-    if (type === "sniper") {
-      return new SniperGunPowerUp({ scene: this, x: puState.x, y: puState.y });
-    }
 
     if (type) {
       try {

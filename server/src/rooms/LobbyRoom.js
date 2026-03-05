@@ -170,6 +170,12 @@ function getBodyAabbPx(body) {
 }
 
 export default class LobbyRoom extends Room {
+  // Returns a random gun id from GUN_CATALOG
+  _randomGunId() {
+    const ids = Object.keys(GUN_CATALOG);
+    return ids[Math.floor(Math.random() * ids.length)];
+  }
+
   onCreate() {
     this.setState(new LobbyState());
 
@@ -291,9 +297,9 @@ export default class LobbyRoom extends Room {
     }
 
     // ------------------------------------------------------------
-    // Sniper powerup spawns (Tiled object layer)
+    // Gun powerup spawns (Tiled object layer) — type is randomised per spawn/respawn
     // ------------------------------------------------------------
-    const sniperSpawnPts = [];
+    const powerUpSpawnPts = [];
 
     if (this.mapJson) {
       const puLayer = getObjectLayer(this.mapJson, "PowerUpSpawns");
@@ -307,36 +313,36 @@ export default class LobbyRoom extends Room {
         const y = Number(o?.y);
         if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
 
-        sniperSpawnPts.push({ x: Math.round(x), y: Math.round(y) });
+        powerUpSpawnPts.push({ x: Math.round(x), y: Math.round(y) });
       }
 
-      if (sniperSpawnPts.length === 0) {
+      if (powerUpSpawnPts.length === 0) {
         const oldPts = getObjectPoints(this.mapJson, "SniperSpawns");
         if (Array.isArray(oldPts)) {
           for (const pt of oldPts) {
             const x = Number(pt?.x);
             const y = Number(pt?.y);
             if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-            sniperSpawnPts.push({ x: Math.round(x), y: Math.round(y) });
+            powerUpSpawnPts.push({ x: Math.round(x), y: Math.round(y) });
           }
         }
       }
     }
 
-    if (sniperSpawnPts.length === 0) {
-      sniperSpawnPts.push({ x: 900, y: 600 });
+    if (powerUpSpawnPts.length === 0) {
+      powerUpSpawnPts.push({ x: 900, y: 600 });
     }
 
-    for (let i = 0; i < sniperSpawnPts.length; i++) {
-      const pt = sniperSpawnPts[i];
+    for (let i = 0; i < powerUpSpawnPts.length; i++) {
+      const pt = powerUpSpawnPts[i];
 
       const pu = new PowerUpState();
-      pu.type = "sniper";
+      pu.type = this._randomGunId();
       pu.x = pt.x;
       pu.y = pt.y;
       pu.active = true;
 
-      this.state.powerUps.set(`sniper_${i}`, pu);
+      this.state.powerUps.set(`powerup_${i}`, pu);
     }
 
     this.playerSims = new Map();
@@ -738,7 +744,10 @@ export default class LobbyRoom extends Room {
 
           const t = setTimeout(() => {
             const pu2 = this.state.powerUps.get(puId);
-            if (pu2) pu2.active = true;
+            if (pu2) {
+              pu2.type = this._randomGunId();
+              pu2.active = true;
+            }
             this.powerUpRespawnTimers.delete(puId);
           }, Math.max(0.1, respawnSec) * 1000);
 

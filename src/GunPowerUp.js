@@ -40,4 +40,20 @@ export default class GunPowerUp extends PowerUp {
 
     this.gunId = gunId;
   }
+
+  // Called when the server changes the type on an existing spawn point
+  setGunType(gunId) {
+    const id = String(gunId || "");
+    const def = GUN_CATALOG[id];
+    if (!def || id === this.gunId) return;
+
+    this.gunId = id;
+
+    if (this.sprite) {
+      this.sprite.setTexture(def.pickupKey);
+      if (def.pickupWpx && def.pickupHpx) {
+        this.sprite.setDisplaySize(def.pickupWpx, def.pickupHpx);
+      }
+    }
+  }
 }
