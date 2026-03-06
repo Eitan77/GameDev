@@ -386,9 +386,48 @@
          "visible":true,
          "x":0,
          "y":0
+        }, 
+        {
+         "draworder":"topdown",
+         "id":10,
+         "name":"FinishLine",
+         "objects":[
+                {
+                 "height":466.666666666667,
+                 "id":29,
+                 "name":"",
+                 "properties":[
+                        {
+                         "name":"FinishLine",
+                         "type":"bool",
+                         "value":true
+                        }],
+                 "rotation":0,
+                 "type":"",
+                 "visible":true,
+                 "width":136.363636363636,
+                 "x":9575.75757575758,
+                 "y":2424.24242424242
+                }, 
+                {
+                 "height":3.030303030303,
+                 "id":30,
+                 "name":"",
+                 "rotation":0,
+                 "type":"",
+                 "visible":true,
+                 "width":0,
+                 "x":8103.0303030303,
+                 "y":1945.45454545455
+                }],
+         "opacity":1,
+         "type":"objectgroup",
+         "visible":true,
+         "x":0,
+         "y":0
         }],
- "nextlayerid":9,
- "nextobjectid":29,
+ "nextlayerid":11,
+ "nextobjectid":31,
  "orientation":"orthogonal",
  "renderorder":"right-down",
  "tiledversion":"1.11.2",

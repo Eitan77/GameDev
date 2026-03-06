@@ -26,6 +26,9 @@ export default class PlayerState extends Schema {
     // ✅ dead/ragdoll flag
     this.dead = false;
 
+    // ✅ round points (persists across rounds in the same room)
+    this.points = 0;
+
     // optional debug
     this.gunX = 0;
     this.gunY = 0;
@@ -53,6 +56,8 @@ defineTypes(PlayerState, {
   health: "uint16",
 
   dead: "boolean",
+
+  points: "uint16",
 
   gunX: "int32",
   gunY: "int32",

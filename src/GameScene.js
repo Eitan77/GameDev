@@ -186,6 +186,8 @@ export default class GameScene extends Phaser.Scene {
     this.callbacks = null;
 
     this._cleanupRegistered = false;
+    // When transitioning to InterimScene mid-match, we keep the room alive.
+    this._keepRoom = false;
   }
 
   init(data) {
@@ -471,6 +473,34 @@ export default class GameScene extends Phaser.Scene {
       this.sound.play(key, { volume, rate });
     });
 
+    // ✅ Round over: a player reached the finish line.
+    // Keep the room open and transition through InterimScene, then back here.
+    this.room.onMessage("roundOver", (msg) => {
+      const winnerName = String(msg?.winnerName || "Player");
+      const scores = Array.isArray(msg?.scores) ? msg.scores : [];
+
+      // Stop sending inputs
+      this.dragActive = false;
+
+      // Don't leave the room when this scene shuts down
+      this._keepRoom = true;
+
+      const roomRef = this.room;
+      const clientRef = this.client;
+      const username = this._username;
+      const playerCount = this.players.size;
+
+      this.scene.start("InterimScene", {
+        room: roomRef,
+        client: clientRef,
+        username,
+        playerCount,
+        scores,
+        winnerName,
+        isRoundOver: true,
+      });
+    });
+
     // ✅ If we joined the room earlier (in MatchmakingScene), the state may already contain
     // players/powerups before these callbacks were attached. Bootstrap anything we don't have yet.
     try {
@@ -603,7 +633,9 @@ export default class GameScene extends Phaser.Scene {
     this.checkpointSprites = [];
 
     try {
-      this.room?.leave();
+      if (!this._keepRoom) {
+        this.room?.leave();
+      }
     } catch (_) {}
     this.room = null;
 
@@ -613,6 +645,7 @@ export default class GameScene extends Phaser.Scene {
     this._reservation = null;
     this._clientFromMM = null;
     this._roomFromMM = null;
+    this._keepRoom = false;
   }
 
   sendInput(deltaSec) {

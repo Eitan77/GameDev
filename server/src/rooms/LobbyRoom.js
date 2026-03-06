@@ -231,6 +231,33 @@ export default class LobbyRoom extends Room {
     }
 
     // ------------------------------------------------------------
+    // Finish Line zones (Tiled object layer "FinishLine")
+    // Any object with property FinishLine=true ends the round.
+    // ------------------------------------------------------------
+    this.finishLineRects = [];
+    this._finishLineTriggered = false;
+    if (this.mapJson) {
+      const flLayer = getObjectLayer(this.mapJson, "FinishLine");
+      const flObjs = Array.isArray(flLayer?.objects) ? flLayer.objects : [];
+
+      for (const o of flObjs) {
+        // Accept objects that have the FinishLine property set to true,
+        // OR any object in the layer (since the layer is named "FinishLine").
+        const flProp = getTiledPropValue(o, "FinishLine");
+        if (flProp === false) continue; // explicitly disabled
+
+        const x = Number(o?.x);
+        const y = Number(o?.y);
+        const w = Number(o?.width);
+        const h = Number(o?.height);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) continue;
+        if (!(w > 0) || !(h > 0)) continue;
+
+        this.finishLineRects.push({ x, y, w, h });
+      }
+    }
+
+    // ------------------------------------------------------------
     // Checkpoints: read from Tiled object layers
     // ------------------------------------------------------------
     this.checkpointSpawnsByBaseId = new Map(); // baseId -> {x,y}
@@ -604,6 +631,130 @@ export default class LobbyRoom extends Room {
   }
 
   // ------------------------------------------------------------
+  // Finish Line detection
+  // First live player to overlap a FinishLine rect wins the round.
+  // ------------------------------------------------------------
+  updateFinishLine() {
+    if (this._finishLineTriggered) return;
+    if (!Array.isArray(this.finishLineRects) || this.finishLineRects.length === 0) return;
+
+    for (const [sid, sim] of this.playerSims.entries()) {
+      const st = this.state.players.get(sid);
+      if (!st || st.dead) continue;
+      if (!sim || !sim.body) continue;
+
+      const p = sim.body.getPosition();
+      const px = p.x * PPM;
+      const py = p.y * PPM;
+
+      for (const r of this.finishLineRects) {
+        if (!r) continue;
+        if (!pointInRect(px, py, r)) continue;
+
+        // This player hit the finish line — trigger round over
+        this.triggerRoundOver(sid);
+        return;
+      }
+    }
+  }
+
+  // ------------------------------------------------------------
+  // Award 1 point to the winner and broadcast round-over.
+  // Server resets the round after a short delay so clients have
+  // time to transition to InterimScene and back.
+  // ------------------------------------------------------------
+  triggerRoundOver(winnerId) {
+    if (this._finishLineTriggered) return;
+    this._finishLineTriggered = true;
+
+    const winnerState = this.state.players.get(winnerId);
+    if (winnerState) {
+      winnerState.points = (Number(winnerState.points) || 0) + 1;
+    }
+
+    // Build scores snapshot for every connected player
+    const scores = [];
+    this.state.players.forEach((st, sid) => {
+      scores.push({
+        sid,
+        name: st.name || "Player",
+        points: Number(st.points) || 0,
+      });
+    });
+
+    const winnerName = winnerState?.name || "Player";
+
+    this.broadcast("roundOver", {
+      winnerId,
+      winnerName,
+      scores,
+    });
+
+    // Reset the round after 1 second — clients should be transitioning
+    // to InterimScene by then (InterimScene shows for MIN_DISPLAY_MS = 3 s).
+    setTimeout(() => {
+      try {
+        this.resetRound();
+      } catch (_) {}
+    }, 1000);
+  }
+
+  // ------------------------------------------------------------
+  // Reset round: respawn all players, restore power-ups, restart timer.
+  // Points are intentionally NOT reset (they persist across rounds).
+  // ------------------------------------------------------------
+  resetRound() {
+    this._finishLineTriggered = false;
+
+    // Cancel all pending power-up respawn timers
+    for (const [puId, t] of this.powerUpRespawnTimers.entries()) {
+      clearTimeout(t);
+      this.powerUpRespawnTimers.delete(puId);
+    }
+
+    // Re-activate all power-ups at their current positions
+    for (const [puId, pu] of this.state.powerUps.entries()) {
+      pu.active = true;
+      // Keep whichever gun type was last assigned (gunCycleIndices are unchanged)
+    }
+
+    // Respawn every player at the default spawn point, drop their gun
+    const spawnX = Number(this.defaultRespawn?.x) || RESPAWN_X;
+    const spawnY = Number(this.defaultRespawn?.y) || RESPAWN_Y;
+
+    for (const [sid, sim] of this.playerSims.entries()) {
+      const st = this.state.players.get(sid);
+      if (!st) continue;
+
+      // Cancel any pending death-respawn timer
+      const dt = this.deathRespawnTimers.get(sid);
+      if (dt) clearTimeout(dt);
+      this.deathRespawnTimers.delete(sid);
+
+      // Drop gun and teleport back to start
+      if (typeof sim.dropGun === "function") sim.dropGun();
+      sim.respawnAt(spawnX, spawnY);
+
+      st.health = st.maxHealth;
+      st.dead = false;
+      st.gunId = "";
+      st.ammo = 0;
+
+      // Reset checkpoint progress for this round
+      const baseId = String(this.defaultRespawn?.baseId || "");
+      if (baseId) this.playerCheckpointBaseId.set(sid, baseId);
+      this.playerRespawnBySid.set(sid, { x: spawnX, y: spawnY });
+      this.playerInsideCheckpoint.set(sid, new Set());
+      this.playerInputs.set(sid, {});
+    }
+
+    // Restart the round timer
+    this._roundStarted = true;
+    this._roundEndMs = Date.now() + ROUND_DURATION_SEC * 1000;
+    this.state.roundTimeLeftSec = ROUND_DURATION_SEC;
+  }
+
+  // ------------------------------------------------------------
   // Round timer update
   // ------------------------------------------------------------
   updateRoundTimer() {
@@ -687,6 +838,9 @@ export default class LobbyRoom extends Room {
 
     // 2.25) kill zones
     this.updateKillZones();
+
+    // 2.30) finish line check
+    this.updateFinishLine();
 
     // 2.5) apply damage events
     for (const e of allEvents) {
