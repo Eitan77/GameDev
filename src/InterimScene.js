@@ -33,11 +33,21 @@ const FRAME_INNER_H = 269;
 
 // ── Score digit display ──
 // Y position for the score block (pixels below the frame centre)
-const SCORE_BELOW_FRAME_PX = FRAME_INNER_H / 2 + 28;
+const SCORE_BELOW_FRAME_PX = FRAME_INNER_H / 2 + 220;
 // Uniform scale applied to every digit sprite
-const DIGIT_SCALE = 1.4;
+const DIGIT_SCALE = 2;
 // Horizontal gap (px, at native resolution) between adjacent digit sprites
 const DIGIT_GAP_PX = 3;
+
+// ── Player name labels ──
+// Positive Y = further below the frame centre; negative = above.
+const NAME_OFFSET_Y_PX   = -(FRAME_INNER_H / 2 + 100);  // above the frame
+const NAME_FONT_SIZE_PX  = 40;
+const NAME_FONT_FAMILY   = "Arial, sans-serif";
+const NAME_COLOR         = "#ffffff";
+const NAME_STROKE_COLOR  = "#000000";
+const NAME_STROKE_WIDTH  = 10;
+const NAME_DEPTH         = 15;
 
 export default class InterimScene extends Phaser.Scene {
   constructor() {
@@ -173,6 +183,12 @@ export default class InterimScene extends Phaser.Scene {
     const W = this.scale.width;   // 1600
     const H = this.scale.height;  // 800
 
+    // ── Resolve player names now (create() runs after state is settled) ──
+    // _scores may have been built in init() before setName was reflected back
+    // from the server. Re-read names here so they're always up to date.
+    // Priority: explicit scores array (from roundOver) > live room state > fallback.
+    const resolvedNames = this._buildResolvedNames();
+
     // ── Background ──
     this.add.image(0, 0, "interim_bg").setOrigin(0, 0);
 
@@ -193,11 +209,21 @@ export default class InterimScene extends Phaser.Scene {
       );
       head.setScale(scale).setDepth(3);
 
-      // ── Score for this slot ──
-      // Default to 0 if we have no scores yet (first pre-game interim).
+      // ── Player name ──
       const entry  = this._scores ? this._scores[i] : null;
+      const name   = resolvedNames[i] || entry?.name || "Player";
       const points = entry ? Math.max(0, Number(entry.points) || 0) : 0;
 
+      this.add.text(frame.x, frame.y + NAME_OFFSET_Y_PX, name, {
+        fontFamily: NAME_FONT_FAMILY,
+        fontSize:   `${NAME_FONT_SIZE_PX}px`,
+        color:      NAME_COLOR,
+        stroke:     NAME_STROKE_COLOR,
+        strokeThickness: NAME_STROKE_WIDTH,
+      }).setOrigin(0.5, 0.5).setDepth(NAME_DEPTH);
+
+      // ── Score for this slot ──
+      // Default to 0 if we have no scores yet (first pre-game interim).
       this._drawScoreDigits(frame.x, frame.y + SCORE_BELOW_FRAME_PX, points);
     }
 
@@ -215,6 +241,53 @@ export default class InterimScene extends Phaser.Scene {
     // were already cached and Phaser skipped the loader), send ready now.
     this._trySendReady();
     this._tryTransition();
+  }
+
+  // -------------------------------------------------------------------
+  // _buildResolvedNames
+  // Returns an array of display names, one per player slot, with the
+  // best available source at the time create() runs.
+  //
+  // Sources in priority order:
+  //   1. Explicit scores array passed in via roundOver (most reliable)
+  //   2. Live room.state.players (settled by create() time)
+  //   3. this._username for the local player (always known)
+  //   4. "Player" fallback
+  // -------------------------------------------------------------------
+  _buildResolvedNames() {
+    const names = [];
+
+    // Source 1: explicit scores array (between-round interims)
+    if (Array.isArray(this._scores) && this._scores.length > 0) {
+      for (const entry of this._scores) {
+        names.push(entry?.name && entry.name !== "Player" ? entry.name : null);
+      }
+    }
+
+    // Source 2: live room state (first-game interim — names settle by create())
+    if (this._room?.state?.players) {
+      let idx = 0;
+      this._room.state.players.forEach((st) => {
+        const liveState = st.name && st.name !== "Player" ? st.name : null;
+        // Override the slot if we got a better name from live state
+        if (liveState && !names[idx]) names[idx] = liveState;
+        else if (names[idx] === undefined) names[idx] = liveState;
+        idx++;
+      });
+    }
+
+    // Source 3: local username — find which slot belongs to us and fill it
+    if (this._username && this._username !== "Player" && this._room?.state?.players) {
+      let idx = 0;
+      this._room.state.players.forEach((st, sid) => {
+        if (!names[idx] && st.name === this._username) names[idx] = this._username;
+        // If state still shows default, the local player is identifiable by room sessionId
+        if (!names[idx] && this._room.sessionId === sid) names[idx] = this._username;
+        idx++;
+      });
+    }
+
+    return names;
   }
 
   // -------------------------------------------------------------------

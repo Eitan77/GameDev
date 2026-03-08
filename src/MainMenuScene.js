@@ -224,7 +224,7 @@ export default class MainMenuScene extends Phaser.Scene {
     const name = String(this._username ?? "")
       .trim()
       .replace(/\s+/g, " ")
-      .slice(0, 16);
+      .slice(0, 12);
     this._username = name || "Player";
 
     this._statusText?.setText(`Entering queue as: ${this._username}`);
@@ -330,7 +330,7 @@ export default class MainMenuScene extends Phaser.Scene {
       if (!allowed) return;
 
       const cur = String(this._username ?? "");
-      if (cur.length >= 16) return;
+      if (cur.length >=12) return;
 
       this._username = cur + key;
       this.refreshNameField();

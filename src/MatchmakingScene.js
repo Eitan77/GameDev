@@ -45,7 +45,7 @@ export default class MatchmakingScene extends Phaser.Scene {
     const name = String(raw ?? "")
       .trim()
       .replace(/\s+/g, " ")
-      .slice(0, 16);
+      .slice(0, 12);
     this.username = name || "Player";
   }
 
