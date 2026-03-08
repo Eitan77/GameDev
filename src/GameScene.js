@@ -186,6 +186,9 @@ export default class GameScene extends Phaser.Scene {
     this.statusText = null;
     this.callbacks = null;
 
+    // Black cover shown during scene init; removed once local player is live.
+    this._coverOverlay = null;
+
     this._cleanupRegistered = false;
     // When transitioning to InterimScene mid-match, we keep the room alive.
     this._keepRoom = false;
@@ -253,6 +256,15 @@ export default class GameScene extends Phaser.Scene {
     this.visibility = new VisibilityManager(this);
 
     this.map = new GameMap(this).create();
+
+    // Covers the world while we wait for the local player + camera to settle.
+    // Removed (with a short fade) once the local player is confirmed live.
+    const W = this.scale.width;
+    const H = this.scale.height;
+    this._coverOverlay = this.add.rectangle(0, 0, W, H, 0x000000, 1)
+      .setOrigin(0, 0)
+      .setScrollFactor(0)
+      .setDepth(9999);
 
     // spawn checkpoint marker images at Tiled respawn points
     this.spawnCheckpointMarkers();
@@ -377,6 +389,9 @@ export default class GameScene extends Phaser.Scene {
 
         // make sure HUD stays on top
         this.ensureUIScene();
+
+        // World is ready — fade out the black cover.
+        this._removeCoverOverlay();
       }
 
       if (playerState && Object.prototype.hasOwnProperty.call(playerState, "onChange")) {
@@ -536,6 +551,19 @@ export default class GameScene extends Phaser.Scene {
     }
   }
 
+  _removeCoverOverlay() {
+    if (!this._coverOverlay) return;
+    const cover = this._coverOverlay;
+    this._coverOverlay = null;
+    this.tweens.add({
+      targets: cover,
+      alpha: 0,
+      duration: 120,
+      ease: "Linear",
+      onComplete: () => { try { cover.destroy(); } catch (_) {} },
+    });
+  }
+
   // create an image at each Tiled point in "PlayerSpawnPoints" (no collision)
   spawnCheckpointMarkers() {
     for (const s of this.checkpointSprites) {
@@ -648,6 +676,18 @@ export default class GameScene extends Phaser.Scene {
       } catch (_) {}
     }
     this.checkpointSprites = [];
+
+    try { this._coverOverlay?.destroy(); } catch (_) {}
+    this._coverOverlay = null;
+
+    // Stop the HUD overlay so it doesn't bleed over InterimScene (or any
+    // other scene that follows).  ensureUIScene() will relaunch it when
+    // GameScene next becomes active.
+    try {
+      if (this.scene.isActive("UIScene") || this.scene.isPaused("UIScene")) {
+        this.scene.stop("UIScene");
+      }
+    } catch (_) {}
 
     try {
       if (!this._keepRoom) {

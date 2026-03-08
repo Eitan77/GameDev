@@ -223,6 +223,12 @@ export default class GameRoom extends LobbyRoom {
     if (this._finishLineTriggered) return;
     this._finishLineTriggered = true;
 
+    // Reset before broadcasting so any "interimReady" that arrives during the
+    // 500 ms window (assets are cached → client responds almost instantly) is
+    // buffered in _pendingReadySids instead of getting an immediate "interimEnd"
+    // via the late-catch-up branch (_interimActive=false && _interimEnded=true).
+    this._interimEnded = false;
+
     const winnerState = this.state.players.get(winnerId);
     if (winnerState) {
       winnerState.points = (Number(winnerState.points) || 0) + 1;
@@ -243,4 +249,4 @@ export default class GameRoom extends LobbyRoom {
       try { this._startInterim(scores, winnerName); } catch (_) {}
     }, 500);
   }
-} 
+}

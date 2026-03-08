@@ -19,6 +19,14 @@ import { preloadGuns } from "./gunCatalog.js";
 // (e.g. server crash / lost connection), transition anyway.
 const INTERIM_SAFETY_MS = 15_000;
 
+// Client-side minimum display floor (ms).
+// Even if the server sends "interimEnd" immediately (e.g. all assets
+// are cached and the client sends "interimReady" before _startInterim
+// runs on the server), we will NOT transition before this much time has
+// elapsed since assets finished loading.  This is the final safety net
+// that prevents the screen from flashing away in under a second.
+const MIN_LOCAL_DISPLAY_MS = 2_500;
+
 // ── Frame geometry (measured from the 1600×800 InterimScreen.png) ──
 // White-rectangle centres and inner size in image-pixels.
 // The canvas is also 1600×800, so these are direct screen coords.
@@ -76,6 +84,12 @@ export default class InterimScene extends Phaser.Scene {
     this._interimEndReceived = false;
     this._readySent          = false;
     this._transitioning      = false;
+
+    // Client-side minimum display floor tracking.
+    // Set to Date.now() when assets finish loading; used in _tryTransition.
+    this._localReadyTime = 0;
+    clearTimeout(this._localMinTimer);
+    this._localMinTimer  = null;
 
     // ── Visibility handler ──
     // Phaser's RAF loop pauses when the tab is hidden. If "interimEnd"
@@ -163,6 +177,7 @@ export default class InterimScene extends Phaser.Scene {
     this.load.on("complete", () => {
       barBg.destroy();
       bar.destroy();
+      this._localReadyTime = Date.now();
       this._assetsReady = true;
       this._trySendReady();
       this._tryTransition();
@@ -172,6 +187,7 @@ export default class InterimScene extends Phaser.Scene {
     // Mark ready now so create()'s failsafe _trySendReady() call will fire.
     this.load.once(Phaser.Loader.Events.START, () => { /* loading did start */ });
     if (!this.load.isLoading() && this.load.totalToLoad === 0) {
+      this._localReadyTime = Date.now();
       this._assetsReady = true;
     }
   }
@@ -351,7 +367,24 @@ export default class InterimScene extends Phaser.Scene {
   _tryTransition() {
     if (!this._assetsReady || !this._interimEndReceived) return;
     if (this._transitioning) return;
+
+    // Client-side minimum display floor: don't transition until the screen
+    // has been visible for at least MIN_LOCAL_DISPLAY_MS.  This prevents
+    // a "flash" when all assets are cached (load.complete fires before
+    // create() runs) or when the server sends "interimEnd" too early.
+    const elapsed = this._localReadyTime > 0 ? Date.now() - this._localReadyTime : 0;
+    if (elapsed < MIN_LOCAL_DISPLAY_MS) {
+      clearTimeout(this._localMinTimer);
+      this._localMinTimer = setTimeout(
+        () => this._tryTransition(),
+        MIN_LOCAL_DISPLAY_MS - elapsed + 10,
+      );
+      return;
+    }
+
     this._transitioning = true;
+    clearTimeout(this._localMinTimer);
+    this._localMinTimer = null;
 
     // Remove the visibility handler — no longer needed once we transition.
     if (this._visibilityHandler) {
