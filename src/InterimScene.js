@@ -15,9 +15,9 @@ import Phaser from "phaser";
 import GameMap  from "./GameMap.js";
 import { preloadGuns } from "./gunCatalog.js";
 
-// How long to show the screen (ms). Assets must ALSO be done before
-// we move on — whichever takes longer wins.
-const MIN_DISPLAY_MS = 3000;
+// Safety timeout (ms): if the server never sends "interimEnd"
+// (e.g. server crash / lost connection), transition anyway.
+const INTERIM_SAFETY_MS = 15_000;
 
 // ── Frame geometry (measured from the 1600×800 InterimScreen.png) ──
 // White-rectangle centres and inner size in image-pixels.
@@ -50,15 +50,51 @@ export default class InterimScene extends Phaser.Scene {
 
     this._scores      = null;
 
-    this._assetsReady  = false;
-    this._timerDone    = false;
-    this._transitioning = false;
+    this._assetsReady       = false;
+    this._interimEndReceived = false;
+    this._readySent          = false;
+    this._transitioning      = false;
   }
 
   init(data) {
     this._room     = data?.room     ?? null;
     this._client   = data?.client   ?? null;
     this._username = data?.username ?? "Player";
+
+    // ── Reset all transition flags here (before preload) ──
+    this._assetsReady        = false;
+    this._interimEndReceived = false;
+    this._readySent          = false;
+    this._transitioning      = false;
+
+    // ── Visibility handler ──
+    // Phaser's RAF loop pauses when the tab is hidden. If "interimEnd"
+    // arrived while hidden, scene.start() was queued but never processed.
+    // When the user tabs back in, retry the transition — it's a no-op if
+    // it already completed, and the correct action if it didn't.
+    if (this._visibilityHandler) {
+      document.removeEventListener("visibilitychange", this._visibilityHandler);
+    }
+    this._visibilityHandler = () => {
+      if (document.hidden) return;
+      if (!this._interimEndReceived) return;
+      // Reset the guard so _tryTransition can fire again if Phaser dropped
+      // the previous scene.start() while the loop was paused.
+      this._transitioning = false;
+      this._tryTransition();
+    };
+    document.addEventListener("visibilitychange", this._visibilityHandler);
+
+    // ── Register "interimEnd" listener here (before preload) ──
+    // If registered in create() instead, the message could theoretically
+    // arrive between load.complete (which sends "interimReady") and
+    // create() executing, and be silently dropped.
+    if (this._room) {
+      this._room.onMessage("interimEnd", () => {
+        this._interimEndReceived = true;
+        this._tryTransition();
+      });
+    }
 
     // ── Build scores from room state whenever possible ──
     // Works for both the initial interim (all 0s) and post-round interims
@@ -118,19 +154,22 @@ export default class InterimScene extends Phaser.Scene {
       barBg.destroy();
       bar.destroy();
       this._assetsReady = true;
+      this._trySendReady();
       this._tryTransition();
     });
+
+    // If nothing needed loading (all cached), Phaser may skip load.complete.
+    // Mark ready now so create()'s failsafe _trySendReady() call will fire.
+    this.load.once(Phaser.Loader.Events.START, () => { /* loading did start */ });
+    if (!this.load.isLoading() && this.load.totalToLoad === 0) {
+      this._assetsReady = true;
+    }
   }
 
   // -------------------------------------------------------------------
   // create — show the board; start the minimum-display timer
   // -------------------------------------------------------------------
   create() {
-    // Reset transition guard every time the scene starts
-    this._transitioning = false;
-    this._assetsReady   = false;
-    this._timerDone     = false;
-
     const W = this.scale.width;   // 1600
     const H = this.scale.height;  // 800
 
@@ -162,17 +201,19 @@ export default class InterimScene extends Phaser.Scene {
       this._drawScoreDigits(frame.x, frame.y + SCORE_BELOW_FRAME_PX, points);
     }
 
-    // ── Minimum-display timer ──
-    this.time.delayedCall(MIN_DISPLAY_MS, () => {
-      this._timerDone = true;
-      this._tryTransition();
+    // Safety: if the server never responds (crash / disconnect), don't
+    // strand the player on the interim screen forever.
+    this.time.delayedCall(INTERIM_SAFETY_MS, () => {
+      if (!this._transitioning) {
+        console.warn("[InterimScene] Safety timeout — server did not send interimEnd.");
+        this._interimEndReceived = true;
+        this._tryTransition();
+      }
     });
 
-    // Edge-case: preload() already finished before create() ran
-    // (all assets were cached — happens on subsequent rounds).
-    if (!this.load.isLoading()) {
-      this._assetsReady = true;
-    }
+    // Failsafe: if preload's load.complete somehow didn't fire (all assets
+    // were already cached and Phaser skipped the loader), send ready now.
+    this._trySendReady();
     this._tryTransition();
   }
 
@@ -219,10 +260,31 @@ export default class InterimScene extends Phaser.Scene {
   }
 
   // -------------------------------------------------------------------
+  // _trySendReady
+  // Called when assets finish loading. Signals the server that this
+  // client is ready to leave the interim screen.
+  // -------------------------------------------------------------------
+  _trySendReady() {
+    if (!this._assetsReady) return;
+    if (!this._room)        return;
+    if (this._readySent)    return;
+    this._readySent = true;
+    try {
+      this._room.send("interimReady");
+    } catch (_) {}
+  }
+
+  // -------------------------------------------------------------------
   _tryTransition() {
-    if (!this._assetsReady || !this._timerDone) return;
+    if (!this._assetsReady || !this._interimEndReceived) return;
     if (this._transitioning) return;
     this._transitioning = true;
+
+    // Remove the visibility handler — no longer needed once we transition.
+    if (this._visibilityHandler) {
+      document.removeEventListener("visibilitychange", this._visibilityHandler);
+      this._visibilityHandler = null;
+    }
 
     this.scene.start("GameScene", {
       room:     this._room,
@@ -231,4 +293,3 @@ export default class InterimScene extends Phaser.Scene {
     });
   }
 }
-
