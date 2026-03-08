@@ -22,7 +22,7 @@ import LobbyRoom from "./LobbyRoom.js";
 const INTERIM_MIN_MS   = 3_000;
 
 // Safety valve: after this, the gate opens regardless of who hasn't signalled.
-const INTERIM_FORCE_MS = 12_000;
+const INTERIM_FORCE_MS = 5_000;
 
 export default class GameRoom extends LobbyRoom {
 

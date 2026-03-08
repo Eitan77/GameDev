@@ -38,7 +38,7 @@ const BALANCE_TARGET_ANGLE_DEG = 7.5;
 const BALANCE_KP = 2000;
 const BALANCE_KD = 200;
 const BALANCE_MAX_TORQUE = 3500;
-const AIR_BALANCE_MULT = 0.04;
+const AIR_BALANCE_MULT = 0.05;
 
 const TILT_ENABLED = true;
 const TILT_MAX_ANGLE_DEG = 50.3;
@@ -60,6 +60,13 @@ const GROUND_RAY_X_OFFSETS_PX = [-FOOT_HALF_W_PX, 0, FOOT_HALF_W_PX];
 const GROUND_RAY_START_INSET_PX = 2;
 const GROUND_RAY_LEN_PX = 10;
 const GROUND_GRACE_TIME_SEC = 0.06;
+
+// Side rays: fire horizontally left and right from the body midpoint.
+// These detect when the player body is resting on a pillar/ledge so
+// auto-balance uses full strength even when the foot is off the ground.
+const SIDE_RAY_Y_OFFSETS_PX  = [-PLAYER_HALF_H_PX * 0.1, PLAYER_HALF_H_PX * 0.4];  // two heights
+const SIDE_RAY_START_INSET_PX = 2;
+const SIDE_RAY_LEN_PX         = 14;
 
 // ✅ Corner ray flicker smoothing (movement)
 const CORNER_GRACE_TIME_SEC = 0.06;
@@ -147,6 +154,11 @@ export default class PlayerSim {
 
     this.touchingGround = false;
     this.groundGraceTimer = 0;
+
+    // Side rays: body resting on a pillar/ledge satisfies auto-balance
+    // but NOT tilt/jump (foot must still be on ground for those).
+    this.touchingAnySurface = false;
+    this.sideGroundGraceTimer = 0;
 
     this.prevTiltDir = 0;
     this.activePivotSide = 0;
@@ -424,6 +436,8 @@ export default class PlayerSim {
 
     this.groundGraceTimer = 0;
     this.touchingGround = false;
+    this.sideGroundGraceTimer = 0;
+    this.touchingAnySurface = false;
 
     // drop weapon on respawn
     this.dropGun();
@@ -650,6 +664,44 @@ export default class PlayerSim {
     };
 
     return { leftHit: castOne(leftX), rightHit: castOne(rightX) };
+  }
+
+  // Fire horizontal rays left and right from two heights on the body midpoint.
+  // Returns true if any side ray hits solid geometry.
+  // Used exclusively for auto-balance strength — does NOT gate tilt or jump.
+  computeSideGroundedByRays() {
+    const rayLenM    = this.pxToM(SIDE_RAY_LEN_PX);
+    const insetM     = this.pxToM(SIDE_RAY_START_INSET_PX);
+    const halfWm     = this.pxToM(PLAYER_HALF_W_PX);
+    const startEdgeM = halfWm - insetM;
+
+    for (const yOffPx of SIDE_RAY_Y_OFFSETS_PX) {
+      const localY = this.pxToM(yOffPx);
+
+      for (const sideSign of [-1, +1]) {
+        const localStart = Vec2(sideSign * startEdgeM, localY);
+        const start      = this.body.getWorldPoint(localStart);
+        // Shoot horizontally in the body's local X direction (world-rotated)
+        const bodyAngle  = this.body.getAngle();
+        const worldDirX  = sideSign * Math.cos(bodyAngle);
+        const worldDirY  = sideSign * Math.sin(bodyAngle);
+        const end        = Vec2(start.x + worldDirX * rayLenM,
+                                start.y + worldDirY * rayLenM);
+
+        let hit = false;
+        this.world.rayCast(start, end, (fixture) => {
+          const tag = fixture.getUserData();
+          if (tag === "playerBody" || tag === "foot" || tag === "arm") return -1;
+          if (tag !== "ground" && tag !== "wall") return -1;
+          hit = true;
+          return 0;
+        });
+
+        if (hit) return true;
+      }
+    }
+
+    return false;
   }
 
   computePDTorqueWrapped(targetAngleRad, kp, kd, maxTorque) {
@@ -970,11 +1022,17 @@ export default class PlayerSim {
       }
     }
 
-    // ground grace
+    // foot ground grace (gates tilt + jump)
     const rawGrounded = this.computeGroundedByRays();
     if (rawGrounded) this.groundGraceTimer = GROUND_GRACE_TIME_SEC;
     else this.groundGraceTimer = Math.max(0, this.groundGraceTimer - fixedDt);
     this.touchingGround = this.groundGraceTimer > 0;
+
+    // side ground grace (gates auto-balance strength only)
+    const rawSideGrounded = this.computeSideGroundedByRays();
+    if (rawSideGrounded || rawGrounded) this.sideGroundGraceTimer = GROUND_GRACE_TIME_SEC;
+    else this.sideGroundGraceTimer = Math.max(0, this.sideGroundGraceTimer - fixedDt);
+    this.touchingAnySurface = this.sideGroundGraceTimer > 0;
 
     // ✅ decay jump-stabilize timer
     this.justJumpedTimer = Math.max(0, this.justJumpedTimer - fixedDt);
@@ -1164,8 +1222,9 @@ export default class PlayerSim {
     if (this.prevTiltDir === 0) {
       const targetAngle = 0;
 
-      const airMult = this.justJumpedTimer > 0 ? 0 : AIR_BALANCE_MULT;
-      const mult = this.touchingGround ? 1 : airMult;
+      const mult = (this.justJumpedTimer > 0) ? 0
+                 : this.touchingAnySurface    ? 1
+                 : AIR_BALANCE_MULT;
 
       if (mult > 0) {
         const torque = this.computePDTorqueWrapped(
