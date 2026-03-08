@@ -23,6 +23,7 @@ import GameMap from "./GameMap.js";
 import Player from "./player.js";
 import GunPowerUp from "./GunPowerUp.js";
 import { preloadGuns } from "./gunCatalog.js";
+import VisibilityManager from "./VisibilityManager.js";
 
 // connects to same host (works on LAN)
 const COLYSEUS_URL = `${window.location.protocol}//${window.location.hostname}:2567`;
@@ -188,6 +189,9 @@ export default class GameScene extends Phaser.Scene {
     this._cleanupRegistered = false;
     // When transitioning to InterimScene mid-match, we keep the room alive.
     this._keepRoom = false;
+
+    // Tab-visibility manager: prevents audio catch-up when tab is restored.
+    this.visibility = null;
   }
 
   init(data) {
@@ -245,6 +249,9 @@ export default class GameScene extends Phaser.Scene {
   }
 
   async create() {
+    // Prevent audio/event catch-up when the tab is restored from background.
+    this.visibility = new VisibilityManager(this);
+
     this.map = new GameMap(this).create();
 
     // spawn checkpoint marker images at Tiled respawn points
@@ -460,9 +467,14 @@ export default class GameScene extends Phaser.Scene {
     });
 
     // --- Events ---
-    this.room.onMessage("shot", (msg) => spawnBeam(this, msg));
+    this.room.onMessage("shot", (msg) => {
+      if (!this.visibility.canPlay()) return;
+      spawnBeam(this, msg);
+    });
 
     this.room.onMessage("sound", (msg) => {
+      if (!this.visibility.canPlay()) return;
+
       const key = msg?.k ?? msg?.key;
       if (!key) return;
       if (!this.cache.audio.exists(key)) return;
@@ -589,6 +601,11 @@ export default class GameScene extends Phaser.Scene {
   }
 
   cleanup() {
+    try {
+      this.visibility?.destroy();
+    } catch (_) {}
+    this.visibility = null;
+
     if (this.scale) this.scale.off("resize");
 
     try {
