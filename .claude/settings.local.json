@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find \"C:/Users/decla/Documents/Game Development/getaway_proto - Copy - Copy/src\" -type f -name \"*.js\" -exec wc -l {} +)"
+    ]
+  }
+}
