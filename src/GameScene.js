@@ -211,6 +211,7 @@ export default class GameScene extends Phaser.Scene {
       .replace(/\s+/g, " ")
       .slice(0, 16);
     this._username = name || "Player";
+    this._cleanupRegistered = false;
   }
 
   preload() {

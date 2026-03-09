@@ -84,6 +84,7 @@ export default class InterimScene extends Phaser.Scene {
     this._interimEndReceived = false;
     this._readySent          = false;
     this._transitioning      = false;
+    this._skipLocalMin       = false;
 
     // Client-side minimum display floor tracking.
     // Set to Date.now() when assets finish loading; used in _tryTransition.
@@ -114,8 +115,9 @@ export default class InterimScene extends Phaser.Scene {
     // arrive between load.complete (which sends "interimReady") and
     // create() executing, and be silently dropped.
     if (this._room) {
-      this._room.onMessage("interimEnd", () => {
+      this._room.onMessage("interimEnd", (msg) => {
         this._interimEndReceived = true;
+        if (msg?.lateJoin) this._skipLocalMin = true;
         this._tryTransition();
       });
     }
@@ -372,14 +374,17 @@ export default class InterimScene extends Phaser.Scene {
     // has been visible for at least MIN_LOCAL_DISPLAY_MS.  This prevents
     // a "flash" when all assets are cached (load.complete fires before
     // create() runs) or when the server sends "interimEnd" too early.
-    const elapsed = this._localReadyTime > 0 ? Date.now() - this._localReadyTime : 0;
-    if (elapsed < MIN_LOCAL_DISPLAY_MS) {
-      clearTimeout(this._localMinTimer);
-      this._localMinTimer = setTimeout(
-        () => this._tryTransition(),
-        MIN_LOCAL_DISPLAY_MS - elapsed + 10,
-      );
-      return;
+    // Skip entirely for late-joining clients (server already moved on).
+    if (!this._skipLocalMin) {
+      const elapsed = this._localReadyTime > 0 ? Date.now() - this._localReadyTime : 0;
+      if (elapsed < MIN_LOCAL_DISPLAY_MS) {
+        clearTimeout(this._localMinTimer);
+        this._localMinTimer = setTimeout(
+          () => this._tryTransition(),
+          MIN_LOCAL_DISPLAY_MS - elapsed + 10,
+        );
+        return;
+      }
     }
 
     this._transitioning = true;

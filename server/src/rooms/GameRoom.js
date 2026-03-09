@@ -67,7 +67,7 @@ export default class GameRoom extends LobbyRoom {
       // Gate already closed (tabbed-out client arriving late) — send
       // "interimEnd" directly to just this client to catch them up.
       if (!this._interimActive && this._interimEnded) {
-        client.send("interimEnd", {});
+        client.send("interimEnd", { lateJoin: true });
         return;
       }
       this._onInterimReady(client.sessionId);
