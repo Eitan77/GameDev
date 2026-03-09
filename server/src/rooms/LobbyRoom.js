@@ -138,6 +138,28 @@ function rectsOverlap(a, b) {
   return a.x <= b.x + b.w && a.x + a.w >= b.x && a.y <= b.y + b.h && a.y + a.h >= b.y;
 }
 
+// ============================================================
+// Tiled object parsing
+// ============================================================
+function parseTiledRect(obj) {
+  const x = Number(obj?.x);
+  const y = Number(obj?.y);
+  const w = Number(obj?.width);
+  const h = Number(obj?.height);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) return null;
+  if (!(w > 0) || !(h > 0)) return null;
+  return { x, y, w, h };
+}
+
+// ============================================================
+// Timer management
+// ============================================================
+function clearTimerFromMap(map, key) {
+  const t = map.get(key);
+  if (t) clearTimeout(t);
+  map.delete(key);
+}
+
 function getBodyAabbPx(body) {
   if (!body) return null;
 
@@ -218,14 +240,10 @@ export default class LobbyRoom extends Room {
           const killsProp = getTiledPropValue(o, "Kills");
           if (killsProp === false) continue;
 
-          const x = Number(o?.x);
-          const y = Number(o?.y);
-          const w = Number(o?.width);
-          const h = Number(o?.height);
-          if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) continue;
-          if (!(w > 0) || !(h > 0)) continue;
+          const rect = parseTiledRect(o);
+          if (!rect) continue;
 
-          this.killZoneRects.push({ x, y, w, h });
+          this.killZoneRects.push(rect);
         }
       }
     }
@@ -246,14 +264,10 @@ export default class LobbyRoom extends Room {
         const flProp = getTiledPropValue(o, "FinishLine");
         if (flProp === false) continue; // explicitly disabled
 
-        const x = Number(o?.x);
-        const y = Number(o?.y);
-        const w = Number(o?.width);
-        const h = Number(o?.height);
-        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) continue;
-        if (!(w > 0) || !(h > 0)) continue;
+        const rect = parseTiledRect(o);
+        if (!rect) continue;
 
-        this.finishLineRects.push({ x, y, w, h });
+        this.finishLineRects.push(rect);
       }
     }
 
@@ -288,16 +302,12 @@ export default class LobbyRoom extends Room {
       for (const o of hitboxObjs) {
         const rawId = getTiledPropValue(o, "id");
         const baseId = normalizeCheckpointBaseId(rawId);
+        if (!baseId) continue;
 
-        const x = Number(o?.x);
-        const y = Number(o?.y);
-        const w = Number(o?.width);
-        const h = Number(o?.height);
+        const rect = parseTiledRect(o);
+        if (!rect) continue;
 
-        if (!baseId || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) continue;
-        if (!(w > 0) || !(h > 0)) continue;
-
-        this.checkpointTriggers.push({ baseId, x, y, w, h });
+        this.checkpointTriggers.push({ baseId, ...rect });
       }
 
       if (this.checkpointSpawnsByBaseId.size > 0) {
@@ -355,6 +365,7 @@ export default class LobbyRoom extends Room {
     }
 
     const GUN_KEYS = Object.keys(GUN_CATALOG);
+    this.gunKeys = GUN_KEYS; // Cache for reuse in power-up respawn
     this.gunCycleIndices = new Map();
 
     for (let i = 0; i < sniperSpawnPts.length; i++) {
@@ -382,13 +393,14 @@ export default class LobbyRoom extends Room {
       const raw = msg || {};
       const b = Number(raw.b);
 
+      let input;
       if (Number.isFinite(b)) {
         const tiltLeft = !!(b & 1);
         const tiltRight = !!(b & 2);
         const dragActive = !!(b & 4);
         const fireHeld = !!(b & 8);
 
-        this.playerInputs.set(client.sessionId, {
+        input = {
           tiltLeft,
           tiltRight,
           dragActive,
@@ -396,15 +408,16 @@ export default class LobbyRoom extends Room {
           dragX: dragActive ? Number(raw.x) : undefined,
           dragY: dragActive ? Number(raw.y) : undefined,
           fireSeq: Number(raw.f) | 0,
-        });
+        };
       } else {
         // Non-compact/debug payload support
-        this.playerInputs.set(client.sessionId, {
+        input = {
           ...raw,
           fireHeld: !!raw.fireHeld,
           fireSeq: Number(raw.fireSeq ?? raw.f) | 0,
-        });
+        };
       }
+      this.playerInputs.set(client.sessionId, input);
     });
 
     this._accMs = 0;
@@ -422,8 +435,7 @@ export default class LobbyRoom extends Room {
       this.state.roundTimeLeftSec = ROUND_DURATION_SEC;
     }
 
-    const spawnX = Number(this.defaultRespawn?.x) || RESPAWN_X;
-    const spawnY = Number(this.defaultRespawn?.y) || RESPAWN_Y;
+    const { x: spawnX, y: spawnY } = this.getDefaultSpawnPoint();
 
     const ps = new PlayerState();
     ps.x = spawnX;
@@ -459,9 +471,7 @@ export default class LobbyRoom extends Room {
   onLeave(client) {
     const sid = client.sessionId;
 
-    const t = this.deathRespawnTimers.get(sid);
-    if (t) clearTimeout(t);
-    this.deathRespawnTimers.delete(sid);
+    clearTimerFromMap(this.deathRespawnTimers, sid);
 
     const sim = this.playerSims.get(sid);
     if (sim) sim.destroy();
@@ -478,6 +488,18 @@ export default class LobbyRoom extends Room {
   broadcastSound(key, volume = 1, rate = 1) {
     if (!key) return;
     this.broadcast("sound", { k: key, v: volume, r: rate });
+  }
+
+  getDefaultSpawnPoint() {
+    const spawnX = Number(this.defaultRespawn?.x) || RESPAWN_X;
+    const spawnY = Number(this.defaultRespawn?.y) || RESPAWN_Y;
+    return { x: spawnX, y: spawnY };
+  }
+
+  getPlayerPair(sessionId) {
+    const st = this.state.players.get(sessionId);
+    const sim = this.playerSims.get(sessionId);
+    return (st && sim) ? { state: st, sim } : null;
   }
 
   getRespawnPoint(sessionId) {
@@ -499,13 +521,11 @@ export default class LobbyRoom extends Room {
   }
 
   respawnPlayer(sessionId) {
-    const old = this.deathRespawnTimers.get(sessionId);
-    if (old) clearTimeout(old);
-    this.deathRespawnTimers.delete(sessionId);
+    clearTimerFromMap(this.deathRespawnTimers, sessionId);
 
-    const st = this.state.players.get(sessionId);
-    const sim = this.playerSims.get(sessionId);
-    if (!st || !sim) return;
+    const pair = this.getPlayerPair(sessionId);
+    if (!pair) return;
+    const { state: st, sim } = pair;
 
     const pt = this.getRespawnPoint(sessionId);
 
@@ -521,9 +541,9 @@ export default class LobbyRoom extends Room {
   }
 
   killPlayer(sessionId, killInfo) {
-    const st = this.state.players.get(sessionId);
-    const sim = this.playerSims.get(sessionId);
-    if (!st || !sim) return;
+    const pair = this.getPlayerPair(sessionId);
+    if (!pair) return;
+    const { state: st, sim } = pair;
     if (st.dead) return;
 
     st.health = 0;
@@ -719,17 +739,14 @@ export default class LobbyRoom extends Room {
     }
 
     // Respawn every player at the default spawn point, drop their gun
-    const spawnX = Number(this.defaultRespawn?.x) || RESPAWN_X;
-    const spawnY = Number(this.defaultRespawn?.y) || RESPAWN_Y;
+    const { x: spawnX, y: spawnY } = this.getDefaultSpawnPoint();
 
     for (const [sid, sim] of this.playerSims.entries()) {
       const st = this.state.players.get(sid);
       if (!st) continue;
 
       // Cancel any pending death-respawn timer
-      const dt = this.deathRespawnTimers.get(sid);
-      if (dt) clearTimeout(dt);
-      this.deathRespawnTimers.delete(sid);
+      clearTimerFromMap(this.deathRespawnTimers, sid);
 
       // Drop gun and teleport back to start
       if (typeof sim.dropGun === "function") sim.dropGun();
@@ -793,8 +810,11 @@ export default class LobbyRoom extends Room {
   }
 
   fixedStep() {
-    // 1) apply inputs
-    const allEvents = [];
+    // 1) apply inputs, partition events by kind
+    const damageEvents = [];
+    const shotEvents = [];
+    const soundEvents = [];
+    const soundDelayedEvents = [];
 
     for (const [sid, sim] of this.playerSims.entries()) {
       const input = this.playerInputs.get(sid) || {};
@@ -807,13 +827,14 @@ export default class LobbyRoom extends Room {
 
       let firedThisStep = false;
       for (const e of ev) {
-        allEvents.push(e);
-        if (e && e.kind === "shot") firedThisStep = true;
+        if (!e) continue;
+        if (e.kind === "damage") damageEvents.push(e);
+        else if (e.kind === "shot") { shotEvents.push(e); firedThisStep = true; }
       }
 
       // ✅ Gunshot audio restored (server authoritative)
       if (firedThisStep && defBefore && defBefore.fireSoundKey) {
-        allEvents.push({
+        soundEvents.push({
           kind: "sound",
           k: defBefore.fireSoundKey,
           v: defBefore.fireSoundVolume ?? 1,
@@ -822,7 +843,7 @@ export default class LobbyRoom extends Room {
 
         // Optional reload sound after last shot
         if ((sim?.ammo ?? 0) <= 0 && defBefore.reloadSoundKey) {
-          allEvents.push({
+          soundDelayedEvents.push({
             kind: "soundDelayed",
             delaySec: defBefore.fireToReloadDelaySec ?? 0,
             k: defBefore.reloadSoundKey,
@@ -843,9 +864,7 @@ export default class LobbyRoom extends Room {
     this.updateFinishLine();
 
     // 2.5) apply damage events
-    for (const e of allEvents) {
-      if (!e || e.kind !== "damage") continue;
-
+    for (const e of damageEvents) {
       const to = String(e.to || "");
       if (!to) continue;
 
@@ -893,17 +912,14 @@ export default class LobbyRoom extends Room {
           }
 
           const respawnSec = Number(def.respawnSec ?? 6);
-          if (this.powerUpRespawnTimers.has(puId)) {
-            clearTimeout(this.powerUpRespawnTimers.get(puId));
-          }
+          clearTimerFromMap(this.powerUpRespawnTimers, puId);
 
           const t = setTimeout(() => {
             const pu2 = this.state.powerUps.get(puId);
             if (pu2) {
-              const keys = Object.keys(GUN_CATALOG);
-              const next = ((this.gunCycleIndices.get(puId) ?? 0) + 1) % keys.length;
+              const next = ((this.gunCycleIndices.get(puId) ?? 0) + 1) % this.gunKeys.length;
               this.gunCycleIndices.set(puId, next);
-              pu2.type = keys[next];
+              pu2.type = this.gunKeys[next];
               pu2.active = true;
             }
             this.powerUpRespawnTimers.delete(puId);
@@ -948,18 +964,16 @@ export default class LobbyRoom extends Room {
       st.gunA = s.gunA;
     }
 
-    // 5) broadcast events
-    for (const e of allEvents) {
-      if (!e) continue;
-
-      if (e.kind === "shot") {
-        this.broadcast("shot", e);
-      } else if (e.kind === "sound") {
-        this.broadcast("sound", e);
-      } else if (e.kind === "soundDelayed") {
-        const delayMs = Math.max(0, Number(e.delaySec) || 0) * 1000;
-        setTimeout(() => this.broadcast("sound", e), delayMs);
-      }
+    // 5) broadcast events (single pass now)
+    for (const e of shotEvents) {
+      this.broadcast("shot", e);
+    }
+    for (const e of soundEvents) {
+      this.broadcast("sound", e);
+    }
+    for (const e of soundDelayedEvents) {
+      const delayMs = Math.max(0, Number(e.delaySec) || 0) * 1000;
+      setTimeout(() => this.broadcast("sound", e), delayMs);
     }
   }
 }

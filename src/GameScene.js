@@ -89,16 +89,50 @@ function redrawBeamMask(canvasTex, fadeFrontPx, tailLenPx) {
   canvasTex.refresh();
 }
 
+function extractMessageProperty(msg, shortKey, longKey, defaultValue) {
+  return msg?.[shortKey] ?? msg?.[longKey] ?? defaultValue;
+}
+
+function destroyAllInCollection(collection) {
+  for (const entity of collection.values()) {
+    try {
+      entity.destroy?.();
+    } catch (_) {}
+  }
+  collection.clear();
+}
+
+// Register property listeners on a state object.
+// onChangeHandler: called when using onChange (or for all properties if not using onChange)
+// propertyKeyOrHandlers: array of keys (use onChangeHandler for all) or object mapping keys to handlers
+function registerStatePropertyListeners(callbacks, state, onChangeHandler, propertyKeyOrHandlers) {
+  if (!state) return;
+
+  if (Object.prototype.hasOwnProperty.call(state, "onChange")) {
+    state.onChange = onChangeHandler;
+  } else {
+    if (Array.isArray(propertyKeyOrHandlers)) {
+      for (const key of propertyKeyOrHandlers) {
+        callbacks.listen(state, key, onChangeHandler);
+      }
+    } else if (typeof propertyKeyOrHandlers === "object") {
+      for (const [key, handler] of Object.entries(propertyKeyOrHandlers)) {
+        callbacks.listen(state, key, handler);
+      }
+    }
+  }
+}
+
 function spawnBeam(scene, msg) {
   const sx = Number(msg?.sx) || 0;
   const sy = Number(msg?.sy) || 0;
   const ex = Number(msg?.ex) || 0;
   const ey = Number(msg?.ey) || 0;
 
-  const widthPx = Math.max(1, Number(msg?.w ?? msg?.widthPx ?? 10));
-  const lifeSec = Math.max(0.01, Number(msg?.l ?? msg?.lifeSec ?? 0.05));
-  const tailLenPx = Math.max(10, Number(msg?.t ?? msg?.tailLenPx ?? 200));
-  const color = Number(msg?.c ?? msg?.color ?? 0xffffff);
+  const widthPx = Math.max(1, extractMessageProperty(msg, "w", "widthPx", 10));
+  const lifeSec = Math.max(0.01, extractMessageProperty(msg, "l", "lifeSec", 0.05));
+  const tailLenPx = Math.max(10, extractMessageProperty(msg, "t", "tailLenPx", 200));
+  const color = Number(extractMessageProperty(msg, "c", "color", 0xffffff));
 
   const len = Phaser.Math.Distance.Between(sx, sy, ex, ey);
   if (len < 2) return;
@@ -252,36 +286,7 @@ export default class GameScene extends Phaser.Scene {
     }
   }
 
-  async create() {
-    // Prevent audio/event catch-up when the tab is restored from background.
-    this.visibility = new VisibilityManager(this);
-
-    this.map = new GameMap(this).create();
-
-    // Covers the world while we wait for the local player + camera to settle.
-    // Removed (with a short fade) once the local player is confirmed live.
-    const W = this.scale.width;
-    const H = this.scale.height;
-    this._coverOverlay = this.add.rectangle(0, 0, W, H, 0x000000, 1)
-      .setOrigin(0, 0)
-      .setScrollFactor(0)
-      .setDepth(9999);
-
-    // spawn checkpoint marker images at Tiled respawn points
-    this.spawnCheckpointMarkers();
-
-    this.statusText = this.add
-      .text(20, 20, "Joining match...", { fontSize: "18px", color: "#ffffff" })
-      .setScrollFactor(0)
-      .setDepth(2000);
-
-    // Start HUD overlay (health + timer)
-    this.ensureUIScene();
-
-    this.keyTiltLeft = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.W);
-    this.keyTiltRight = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.E);
-    this.keyFire = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.R);
-
+  setupInputListeners() {
     // Drag input
     this.input.on("pointerdown", (pointer) => {
       if (!this.localPlayer?.sprite) return;
@@ -320,6 +325,39 @@ export default class GameScene extends Phaser.Scene {
     const endDrag = () => (this.dragActive = false);
     this.input.on("pointerup", endDrag);
     this.input.on("pointerupoutside", endDrag);
+  }
+
+  async create() {
+    // Prevent audio/event catch-up when the tab is restored from background.
+    this.visibility = new VisibilityManager(this);
+
+    this.map = new GameMap(this).create();
+
+    // Covers the world while we wait for the local player + camera to settle.
+    // Removed (with a short fade) once the local player is confirmed live.
+    const W = this.scale.width;
+    const H = this.scale.height;
+    this._coverOverlay = this.add.rectangle(0, 0, W, H, 0x000000, 1)
+      .setOrigin(0, 0)
+      .setScrollFactor(0)
+      .setDepth(9999);
+
+    // spawn checkpoint marker images at Tiled respawn points
+    this.spawnCheckpointMarkers();
+
+    this.statusText = this.add
+      .text(20, 20, "Joining match...", { fontSize: "18px", color: "#ffffff" })
+      .setScrollFactor(0)
+      .setDepth(2000);
+
+    // Start HUD overlay (health + timer)
+    this.ensureUIScene();
+
+    this.keyTiltLeft = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.W);
+    this.keyTiltRight = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.E);
+    this.keyFire = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.R);
+
+    this.setupInputListeners();
 
     // Connect to the actual match room
     try {
@@ -395,14 +433,15 @@ export default class GameScene extends Phaser.Scene {
         this._removeCoverOverlay();
       }
 
-      if (playerState && Object.prototype.hasOwnProperty.call(playerState, "onChange")) {
-        playerState.onChange = (changes) => {
-          if (typeof p.applyStateChanges === "function") p.applyStateChanges(changes, playerState);
-          else p.setTargetFromState(playerState);
-        };
-      } else {
-        const refresh = () => p.setTargetFromState(playerState);
+      const playerRefresh = (changes) => {
+        if (typeof p.applyStateChanges === "function") p.applyStateChanges(changes, playerState);
+        else p.setTargetFromState(playerState);
+      };
 
+      registerStatePropertyListeners(
+        this.callbacks,
+        playerState,
+        playerRefresh,
         [
           "name",
           "x",
@@ -420,10 +459,8 @@ export default class GameScene extends Phaser.Scene {
           "gunX",
           "gunY",
           "gunA",
-        ].forEach((k) => {
-          this.callbacks.listen(playerState, k, refresh);
-        });
-      }
+        ]
+      );
     };
 
     this.callbacks.onAdd("players", (playerState, sessionId) => {
@@ -460,16 +497,21 @@ export default class GameScene extends Phaser.Scene {
       view.syncFromState(puState);
       this.powerUps.set(puId, view);
 
-      if (puState && Object.prototype.hasOwnProperty.call(puState, "onChange")) {
-        puState.onChange = (changes) => view.applyStateChanges(changes, puState);
-      } else {
-        this.callbacks.listen(puState, "type", (type) => {
-          if (typeof view.setGunType === "function") view.setGunType(type);
-        });
-        this.callbacks.listen(puState, "active", (active) => view.setActive(!!active));
-        this.callbacks.listen(puState, "x", (x) => view.setPosition(Number(x) || 0, view.sprite?.y ?? 0));
-        this.callbacks.listen(puState, "y", (y) => view.setPosition(view.sprite?.x ?? 0, Number(y) || 0));
-      }
+      const puRefresh = (changes) => view.applyStateChanges(changes, puState);
+
+      registerStatePropertyListeners(
+        this.callbacks,
+        puState,
+        puRefresh,
+        {
+          type: (type) => {
+            if (typeof view.setGunType === "function") view.setGunType(type);
+          },
+          active: (active) => view.setActive(!!active),
+          x: (x) => view.setPosition(Number(x) || 0, view.sprite?.y ?? 0),
+          y: (y) => view.setPosition(view.sprite?.x ?? 0, Number(y) || 0),
+        }
+      );
     };
 
     this.callbacks.onAdd("powerUps", (puState, puId) => {
@@ -491,12 +533,12 @@ export default class GameScene extends Phaser.Scene {
     this.room.onMessage("sound", (msg) => {
       if (!this.visibility.canPlay()) return;
 
-      const key = msg?.k ?? msg?.key;
+      const key = extractMessageProperty(msg, "k", "key");
       if (!key) return;
       if (!this.cache.audio.exists(key)) return;
 
-      const volume = Math.max(0, Math.min(1, Number(msg?.v ?? msg?.volume ?? 1)));
-      const rate = Math.max(0.01, Number(msg?.r ?? msg?.rate ?? 1));
+      const volume = Math.max(0, Math.min(1, Number(extractMessageProperty(msg, "v", "volume", 1))));
+      const rate = Math.max(0.01, Number(extractMessageProperty(msg, "r", "rate", 1)));
 
       this.sound.play(key, { volume, rate });
     });
@@ -656,20 +698,10 @@ export default class GameScene extends Phaser.Scene {
       this.cameras?.main?.stopFollow();
     } catch (_) {}
 
-    for (const p of this.players.values()) {
-      try {
-        p.destroy();
-      } catch (_) {}
-    }
-    this.players.clear();
+    destroyAllInCollection(this.players);
     this.localPlayer = null;
 
-    for (const v of this.powerUps.values()) {
-      try {
-        v.destroy?.();
-      } catch (_) {}
-    }
-    this.powerUps.clear();
+    destroyAllInCollection(this.powerUps);
 
     for (const s of this.checkpointSprites) {
       try {
@@ -685,7 +717,7 @@ export default class GameScene extends Phaser.Scene {
     // other scene that follows).  ensureUIScene() will relaunch it when
     // GameScene next becomes active.
     try {
-      if (this.scene.isActive("UIScene") || this.scene.isPaused("UIScene")) {
+      if (this.scene.isActive("UIScene")) {
         this.scene.stop("UIScene");
       }
     } catch (_) {}
