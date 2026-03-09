@@ -787,13 +787,35 @@ export default class PlayerSim {
       posNow.y + (posPerfect.y - posNow.y) * a
     );
 
+    // Wall clearance: prevent setTransform from embedding player in walls.
+    // Cast a horizontal ray from posNow toward posNew; if a wall is hit,
+    // clamp posNew.x so the body stays clear by PLAYER_HALF_W_PX.
+    const dx = posNew.x - posNow.x;
+    if (Math.abs(dx) > 1e-5) {
+      const sideSign = Math.sign(dx);
+      const clearanceM = this.pxToM(PLAYER_HALF_W_PX + 2);
+      const scanLen = Math.abs(dx) + clearanceM;
+      const scanEnd = Vec2(posNow.x + sideSign * scanLen, posNow.y);
+      let minFrac = 1.0;
+      this.world.rayCast(posNow, scanEnd, (fixture, pt, nrm, frac) => {
+        const tag = fixture.getUserData();
+        if (tag === "playerBody" || tag === "foot" || tag === "arm") return -1;
+        if (tag !== "ground" && tag !== "wall") return -1;
+        if (frac < minFrac) minFrac = frac;
+        return frac;
+      });
+      if (minFrac < 1.0) {
+        const wallX = posNow.x + sideSign * scanLen * minFrac;
+        posNew.x = wallX - sideSign * clearanceM;
+      }
+    }
+
     this.body.setTransform(posNew, angleTarget);
     this.body.setAngularVelocity(0);
 
-    // ✅ Allow sliding while tilting: keep horizontal velocity.
-    // Kill vertical while grounded to avoid jitter from setTransform.
-    const v = this.body.getLinearVelocity();
-    this.body.setLinearVelocity(Vec2(v.x, 0));
+    // Kill both velocity components during tilt: gravity is disabled (setGravityScale 0)
+    // so vx/vy should not accumulate; zero both to prevent drift.
+    this.body.setLinearVelocity(Vec2(0, 0));
 
     // keep a notion of which "side" we're leaning to
     if (Math.abs(localXTarget) > 1e-6) this.activePivotSide = localXTarget > 0 ? +1 : -1;
@@ -1151,6 +1173,7 @@ export default class PlayerSim {
     const tiltAllowedNow = TILT_ENABLED && this.touchingGround;
 
     if (!tiltAllowedNow) {
+      this.body.setGravityScale(1);
       this.prevTiltDir = 0;
       this.activePivotSide = 0;
       this.holdPastMaxActive = false;
@@ -1160,6 +1183,7 @@ export default class PlayerSim {
 
     // Release tilt -> jump
     if (tiltAllowedNow && this.prevTiltDir !== 0 && tiltDir === 0) {
+      this.body.setGravityScale(1);
       const didJump = this.doTiltReleaseJump();
 
       this.prevTiltDir = 0;
@@ -1172,8 +1196,21 @@ export default class PlayerSim {
     }
 
     if (tiltAllowedNow && tiltDir !== 0) {
+      // Disable gravity while tilting so it doesn't fight setTransform
+      this.body.setGravityScale(0);
+
       const angleNow = wrapRadPi(this.body.getAngle());
       const isTiltStartOrSwitch = this.prevTiltDir === 0 || tiltDir !== this.prevTiltDir;
+
+      // On fresh press / direction switch: if already past max, lock here immediately
+      if (isTiltStartOrSwitch) {
+        if (Math.abs(angleNow) >= TILT_MAX_ANGLE_RAD) {
+          this.holdPastMaxActive = true;
+          this.holdPastMaxAngleRad = angleNow;
+        } else {
+          this.holdPastMaxActive = false;
+        }
+      }
 
       const cornerHits = this.computeFootCornerGroundedByRays();
 
@@ -1189,23 +1226,26 @@ export default class PlayerSim {
       const leftGrounded = this.leftCornerGrace > 0;
       const rightGrounded = this.rightCornerGrace > 0;
 
+      // Compute the desired angle this tick
       const wantAngle = clamp(tiltDir * TILT_MAX_ANGLE_RAD, -TILT_MAX_ANGLE_RAD, +TILT_MAX_ANGLE_RAD);
-
       const diff = wrapRadPi(wantAngle - angleNow);
       let step = clamp(diff, -TILT_ROTATE_SPEED_RAD_PER_SEC * fixedDt, +TILT_ROTATE_SPEED_RAD_PER_SEC * fixedDt);
-
       let angleTarget = wrapRadPi(angleNow + step);
 
+      // Clamp to max and latch the hold flag when we reach it
       const atMax = Math.abs(angleTarget) >= (TILT_MAX_ANGLE_RAD - TILT_PAST_MAX_EPS_RAD);
-      if (atMax) {
+      // Only latch the max-hold if we haven't already locked (e.g. started past max).
+      // If holdPastMaxActive is already true, the locked angle was set on press and
+      // must not be overwritten by the atMax check.
+      if (atMax && !this.holdPastMaxActive) {
+        angleTarget = tiltDir * TILT_MAX_ANGLE_RAD;
         this.holdPastMaxActive = true;
         this.holdPastMaxAngleRad = angleTarget;
-      } else {
-        if (this.holdPastMaxActive) {
-          if (Math.sign(angleTarget) !== Math.sign(this.holdPastMaxAngleRad)) {
-            this.holdPastMaxActive = false;
-          }
-        }
+      }
+
+      // Enforce the locked angle (started past max, or reached max)
+      if (this.holdPastMaxActive) {
+        angleTarget = this.holdPastMaxAngleRad;
       }
 
       this.applyTiltPinnedToFootContact(angleNow, angleTarget, leftGrounded, rightGrounded);
@@ -1214,6 +1254,9 @@ export default class PlayerSim {
 
       return events;
     }
+
+    // Ensure gravity is restored any time we reach this non-tilt path
+    this.body.setGravityScale(1);
 
     // auto-balance when NOT actively tilting
     // - On ground: full strength
