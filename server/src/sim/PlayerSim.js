@@ -1,21 +1,12 @@
-// PlayerSim.js
 // ============================================================
 // server/src/sim/PlayerSim.js
-// Server-side Planck simulation for one player.
-//
-// FIXES:
-// ✅ Tilting can still slide naturally (keeps vx while tilting)
-// ✅ Removes occasional sideways snap when switching far-left -> far-right tilt
-//    by rocking about a continuous contact point along the foot bottom
-//    + smoothing corner ray flicker with a short grace timer.
-// ✅ Removes "weird rotation" right after jumping by suppressing in-air
-//    balance torque for a brief moment after jump.
+// Server-side Planck physics simulation for one player.
+// Handles movement, tilt/jump, arm swing, guns, and auto-aim.
 // ============================================================
 
 import planck from "planck";
 
-const pl = planck;
-const Vec2 = pl.Vec2;
+const { Vec2, Box, RevoluteJoint, MouseJoint } = planck;
 
 export const PPM = 30;
 
@@ -98,6 +89,14 @@ const TILT_ROTATE_SPEED_RAD_PER_SEC = (TILT_ROTATE_SPEED_DEG_PER_SEC * Math.PI) 
 
 const BEAM_DEFAULT_MUZZLE_NORM_X = 0.98;
 const BEAM_DEFAULT_MUZZLE_NORM_Y = 0.5;
+
+const EPSILON = 1e-6;
+
+// Returns true if a rayCast fixture should be skipped (self-parts or non-terrain).
+function skipRayFixture(tag) {
+  return tag === "playerBody" || tag === "foot" || tag === "arm"
+      || (tag !== "ground" && tag !== "wall");
+}
 
 function clamp(x, min, max) {
   return Math.max(min, Math.min(max, x));
@@ -192,7 +191,7 @@ export default class PlayerSim {
   mToPx(m) { return m * PPM; }
 
   isDead() {
-    return !!this.dead;
+    return this.dead;
   }
 
   // ✅ Enter/exit ragdoll
@@ -210,13 +209,7 @@ export default class PlayerSim {
       this.dropGun();
 
       // clear movement state so we don't "snap" on revive
-      this.prevTiltDir = 0;
-      this.activePivotSide = 0;
-      this.holdPastMaxActive = false;
-      this.holdPastMaxAngleRad = 0;
-
-      this.leftCornerGrace = 0;
-      this.rightCornerGrace = 0;
+      this._resetTiltState();
       this.justJumpedTimer = 0;
 
       // give a small topple so it actually falls limp
@@ -244,7 +237,7 @@ export default class PlayerSim {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
 
     const mag = Math.hypot(x, y);
-    if (mag < 1e-6) return;
+    if (mag < EPSILON) return;
 
     const nx = x / mag;
     const ny = y / mag;
@@ -269,17 +262,26 @@ export default class PlayerSim {
     this.body.setUserData({ kind: "player", sessionId: this.sessionId });
 
     const mainFix = this.body.createFixture(
-      pl.Box(this.pxToM(PLAYER_HALF_W_PX), this.pxToM(PLAYER_HALF_H_PX)),
+      Box(this.pxToM(PLAYER_HALF_W_PX), this.pxToM(PLAYER_HALF_H_PX)),
       { density: PLAYER_DENSITY, friction: PLAYER_FRICTION }
     );
     mainFix.setUserData("playerBody");
 
     const footCenterLocal = Vec2(0, this.pxToM(PLAYER_HALF_H_PX - FOOT_HALF_H_PX));
     const footFix = this.body.createFixture(
-      pl.Box(this.pxToM(FOOT_HALF_W_PX), this.pxToM(FOOT_HALF_H_PX), footCenterLocal, 0),
+      Box(this.pxToM(FOOT_HALF_W_PX), this.pxToM(FOOT_HALF_H_PX), footCenterLocal, 0),
       { density: FOOT_DENSITY, friction: FOOT_FRICTION }
     );
     footFix.setUserData("foot");
+  }
+
+  _resetTiltState() {
+    this.prevTiltDir = 0;
+    this.activePivotSide = 0;
+    this.holdPastMaxActive = false;
+    this.holdPastMaxAngleRad = 0;
+    this.leftCornerGrace = 0;
+    this.rightCornerGrace = 0;
   }
 
   destroySwingArm() {
@@ -294,11 +296,12 @@ export default class PlayerSim {
     this.armTopLocalM = null;
   }
 
-  createSwingArm() {
-    const shoulderLocalXpx = ARM_SHOULDER_LOCAL_X_PX * this.facingDir;
-    const shoulderLocalYpx = ARM_SHOULDER_LOCAL_Y_PX;
-
-    const shoulderLocal = Vec2(this.pxToM(shoulderLocalXpx), this.pxToM(shoulderLocalYpx));
+  // Shared arm body/joint setup. Creates armBody, armJoint, armTopLocalM at `angle`.
+  _spawnArmBody(angle) {
+    const shoulderLocal = Vec2(
+      this.pxToM(ARM_SHOULDER_LOCAL_X_PX * this.facingDir),
+      this.pxToM(ARM_SHOULDER_LOCAL_Y_PX)
+    );
     const shoulderWorld = this.body.getWorldPoint(shoulderLocal);
 
     const armHalfWm = this.pxToM(ARM_W_PX / 2);
@@ -306,22 +309,20 @@ export default class PlayerSim {
 
     this.armTopLocalM = Vec2(0, -armHalfHm);
 
-    const startAngle = this.body.getAngle();
-    const topOffsetRot = rotateXY(0, -armHalfHm, startAngle);
+    const topOffsetRot = rotateXY(0, -armHalfHm, angle);
     const armCenter = Vec2(shoulderWorld.x - topOffsetRot.x, shoulderWorld.y - topOffsetRot.y);
 
     this.armBody = this.world.createBody({
       type: "dynamic",
       position: armCenter,
-      angle: startAngle,
+      angle,
       fixedRotation: false,
     });
 
-    const armFix = this.armBody.createFixture(pl.Box(armHalfWm, armHalfHm), {
+    const armFix = this.armBody.createFixture(Box(armHalfWm, armHalfHm), {
       density: ARM_DENSITY,
       friction: 0,
     });
-
     armFix.setUserData("arm");
     armFix.setSensor(true);
     armFix.setFilterData({ categoryBits: 0x0004, maskBits: 0x0000 });
@@ -330,13 +331,17 @@ export default class PlayerSim {
     this.armBody.setAngularDamping(ARM_ANGULAR_DAMPING);
 
     this.armJoint = this.world.createJoint(
-      pl.RevoluteJoint(
+      RevoluteJoint(
         { collideConnected: false, enableLimit: false, enableMotor: false },
         this.body,
         this.armBody,
         shoulderWorld
       )
     );
+  }
+
+  createSwingArm() {
+    this._spawnArmBody(this.body.getAngle());
   }
 
   rebuildArmForFacing() {
@@ -356,48 +361,7 @@ export default class PlayerSim {
     const keepLinVel = Vec2(lv.x, lv.y);
 
     this.destroySwingArm();
-
-    const shoulderLocalXpx = ARM_SHOULDER_LOCAL_X_PX * this.facingDir;
-    const shoulderLocalYpx = ARM_SHOULDER_LOCAL_Y_PX;
-
-    const shoulderLocal = Vec2(this.pxToM(shoulderLocalXpx), this.pxToM(shoulderLocalYpx));
-    const shoulderWorld = this.body.getWorldPoint(shoulderLocal);
-
-    const armHalfWm = this.pxToM(ARM_W_PX / 2);
-    const armHalfHm = this.pxToM(ARM_H_PX / 2);
-
-    this.armTopLocalM = Vec2(0, -armHalfHm);
-
-    const topOffsetRot = rotateXY(0, -armHalfHm, keepAngle);
-    const armCenter = Vec2(shoulderWorld.x - topOffsetRot.x, shoulderWorld.y - topOffsetRot.y);
-
-    this.armBody = this.world.createBody({
-      type: "dynamic",
-      position: armCenter,
-      angle: keepAngle,
-      fixedRotation: false,
-    });
-
-    const armFix = this.armBody.createFixture(pl.Box(armHalfWm, armHalfHm), {
-      density: ARM_DENSITY,
-      friction: 0,
-    });
-
-    armFix.setUserData("arm");
-    armFix.setSensor(true);
-    armFix.setFilterData({ categoryBits: 0x0004, maskBits: 0x0000 });
-
-    this.armBody.setLinearDamping(ARM_LINEAR_DAMPING);
-    this.armBody.setAngularDamping(ARM_ANGULAR_DAMPING);
-
-    this.armJoint = this.world.createJoint(
-      pl.RevoluteJoint(
-        { collideConnected: false, enableLimit: false, enableMotor: false },
-        this.body,
-        this.armBody,
-        shoulderWorld
-      )
-    );
+    this._spawnArmBody(keepAngle);
 
     this.armBody.setAwake(true);
     this.armBody.setLinearVelocity(keepLinVel);
@@ -425,13 +389,7 @@ export default class PlayerSim {
 
     this.endMouseDrag();
 
-    this.prevTiltDir = 0;
-    this.activePivotSide = 0;
-    this.holdPastMaxActive = false;
-    this.holdPastMaxAngleRad = 0;
-
-    this.leftCornerGrace = 0;
-    this.rightCornerGrace = 0;
+    this._resetTiltState();
     this.justJumpedTimer = 0;
 
     this.groundGraceTimer = 0;
@@ -471,7 +429,7 @@ export default class PlayerSim {
     this.body.setAwake(true);
 
     this.mouseJoint = this.world.createJoint(
-      pl.MouseJoint(
+      MouseJoint(
         {
           maxForce: MOUSE_DRAG_MAX_FORCE,
           frequencyHz: MOUSE_DRAG_FREQUENCY_HZ,
@@ -628,9 +586,7 @@ export default class PlayerSim {
       const end = Vec2(start.x, start.y + rayLenM);
 
       this.world.rayCast(start, end, (fixture) => {
-        const tag = fixture.getUserData();
-        if (tag === "playerBody" || tag === "foot" || tag === "arm") return -1;
-        if (tag !== "ground" && tag !== "wall") return -1;
+        if (skipRayFixture(fixture.getUserData())) return -1;
         anyHit = true;
         return 0;
       });
@@ -653,9 +609,7 @@ export default class PlayerSim {
 
       let hit = false;
       this.world.rayCast(start, end, (fixture) => {
-        const tag = fixture.getUserData();
-        if (tag === "playerBody" || tag === "foot" || tag === "arm") return -1;
-        if (tag !== "ground" && tag !== "wall") return -1;
+        if (skipRayFixture(fixture.getUserData())) return -1;
         hit = true;
         return 0;
       });
@@ -690,9 +644,7 @@ export default class PlayerSim {
 
         let hit = false;
         this.world.rayCast(start, end, (fixture) => {
-          const tag = fixture.getUserData();
-          if (tag === "playerBody" || tag === "foot" || tag === "arm") return -1;
-          if (tag !== "ground" && tag !== "wall") return -1;
+          if (skipRayFixture(fixture.getUserData())) return -1;
           hit = true;
           return 0;
         });
@@ -710,30 +662,6 @@ export default class PlayerSim {
     const err = wrapRadPi(targetAngleRad - angle);
     const torque = kp * err - kd * angVel;
     return clamp(torque, -maxTorque, maxTorque);
-  }
-
-  choosePivotCorner(tiltDir, cornerHits, angleNow, angleTarget) {
-    // kept (not used in the new rocking method), but left here in case
-    // other code still expects it
-    let pivotSide = 0;
-
-    if (cornerHits.leftHit && !cornerHits.rightHit) pivotSide = -1;
-    if (cornerHits.rightHit && !cornerHits.leftHit) pivotSide = +1;
-
-    if (cornerHits.leftHit && cornerHits.rightHit) {
-      if (this.holdPastMaxActive) pivotSide = angleNow >= 0 ? +1 : -1;
-      else pivotSide = tiltDir;
-    }
-
-    if (!cornerHits.leftHit && !cornerHits.rightHit) {
-      if (this.activePivotSide !== 0) pivotSide = this.activePivotSide;
-      else pivotSide = angleNow >= 0 ? +1 : -1;
-    }
-
-    if (this.activePivotSide === +1 && tiltDir === -1 && angleNow > 0 && angleTarget <= 0) pivotSide = -1;
-    if (this.activePivotSide === -1 && tiltDir === +1 && angleNow < 0 && angleTarget >= 0) pivotSide = +1;
-
-    return pivotSide;
   }
 
   // ------------------------------------------------------------
@@ -791,16 +719,14 @@ export default class PlayerSim {
     // Cast a horizontal ray from posNow toward posNew; if a wall is hit,
     // clamp posNew.x so the body stays clear by PLAYER_HALF_W_PX.
     const dx = posNew.x - posNow.x;
-    if (Math.abs(dx) > 1e-5) {
+    if (Math.abs(dx) > EPSILON) {
       const sideSign = Math.sign(dx);
       const clearanceM = this.pxToM(PLAYER_HALF_W_PX + 2);
       const scanLen = Math.abs(dx) + clearanceM;
       const scanEnd = Vec2(posNow.x + sideSign * scanLen, posNow.y);
       let minFrac = 1.0;
       this.world.rayCast(posNow, scanEnd, (fixture, pt, nrm, frac) => {
-        const tag = fixture.getUserData();
-        if (tag === "playerBody" || tag === "foot" || tag === "arm") return -1;
-        if (tag !== "ground" && tag !== "wall") return -1;
+        if (skipRayFixture(fixture.getUserData())) return -1;
         if (frac < minFrac) minFrac = frac;
         return frac;
       });
@@ -818,7 +744,7 @@ export default class PlayerSim {
     this.body.setLinearVelocity(Vec2(0, 0));
 
     // keep a notion of which "side" we're leaning to
-    if (Math.abs(localXTarget) > 1e-6) this.activePivotSide = localXTarget > 0 ? +1 : -1;
+    if (Math.abs(localXTarget) > EPSILON) this.activePivotSide = localXTarget > 0 ? +1 : -1;
     else this.activePivotSide = angleTarget >= 0 ? +1 : -1;
   }
 
@@ -1062,9 +988,7 @@ export default class PlayerSim {
     // dragging disables tilt/balance
     this.updateMouseDrag(input);
 
-    if (typeof this.updateAutoAim === "function") {
-      this.updateAutoAim(fixedDt);
-    }
+    this.updateAutoAim(fixedDt);
 
     const events = [];
 
@@ -1156,11 +1080,7 @@ export default class PlayerSim {
 
     // MOVEMENT
     if (this.isDragging) {
-      this.prevTiltDir = 0;
-      this.activePivotSide = 0;
-      this.holdPastMaxActive = false;
-      this.leftCornerGrace = 0;
-      this.rightCornerGrace = 0;
+      this._resetTiltState();
       return events;
     }
 
@@ -1174,24 +1094,14 @@ export default class PlayerSim {
 
     if (!tiltAllowedNow) {
       this.body.setGravityScale(1);
-      this.prevTiltDir = 0;
-      this.activePivotSide = 0;
-      this.holdPastMaxActive = false;
-      this.leftCornerGrace = 0;
-      this.rightCornerGrace = 0;
+      this._resetTiltState();
     }
 
     // Release tilt -> jump
     if (tiltAllowedNow && this.prevTiltDir !== 0 && tiltDir === 0) {
       this.body.setGravityScale(1);
       const didJump = this.doTiltReleaseJump();
-
-      this.prevTiltDir = 0;
-      this.activePivotSide = 0;
-      this.holdPastMaxActive = false;
-      this.leftCornerGrace = 0;
-      this.rightCornerGrace = 0;
-
+      this._resetTiltState();
       if (didJump) return events;
     }
 
