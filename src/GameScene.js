@@ -32,6 +32,12 @@ const ROOM_NAME = "lobby";
 export const NET_SEND_HZ = 60;
 
 // ------------------------------------------------------------
+// Curtain transition timing (ms)
+// How long the black cover takes to slide off when the round starts.
+// ------------------------------------------------------------
+const COVER_SLIDE_OUT_MS = 600;
+
+// ------------------------------------------------------------
 // Camera tuning
 // ------------------------------------------------------------
 const CAMERA_ZOOM = 1.05;
@@ -350,9 +356,6 @@ export default class GameScene extends Phaser.Scene {
       .setScrollFactor(0)
       .setDepth(2000);
 
-    // Start HUD overlay (health + timer)
-    this.ensureUIScene();
-
     this.keyTiltLeft = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.W);
     this.keyTiltRight = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.E);
     this.keyFire = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.R);
@@ -426,11 +429,8 @@ export default class GameScene extends Phaser.Scene {
 
         this.applyCameraTuning();
 
-        // make sure HUD stays on top
-        this.ensureUIScene();
-
-        // World is ready — fade out the black cover.
-        this._removeCoverOverlay();
+        // World is ready — slide out the cover, then launch HUD on top.
+        this._removeCoverOverlay(() => this.ensureUIScene());
       }
 
       const playerRefresh = (changes) => {
@@ -594,16 +594,23 @@ export default class GameScene extends Phaser.Scene {
     }
   }
 
-  _removeCoverOverlay() {
-    if (!this._coverOverlay) return;
+  _removeCoverOverlay(onDone) {
+    if (!this._coverOverlay) {
+      if (onDone) onDone();
+      return;
+    }
     const cover = this._coverOverlay;
     this._coverOverlay = null;
+    const H = this.scale.height;
     this.tweens.add({
       targets: cover,
-      alpha: 0,
-      duration: 120,
-      ease: "Linear",
-      onComplete: () => { try { cover.destroy(); } catch (_) {} },
+      y: H,
+      duration: COVER_SLIDE_OUT_MS,
+      ease: "Power2",
+      onComplete: () => {
+        try { cover.destroy(); } catch (_) {}
+        if (onDone) onDone();
+      },
     });
   }
 

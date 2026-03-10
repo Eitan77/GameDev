@@ -27,6 +27,10 @@ const INTERIM_SAFETY_MS = 15_000;
 // that prevents the screen from flashing away in under a second.
 const MIN_LOCAL_DISPLAY_MS = 2_500;
 
+// ── Curtain transition timings (ms) ──
+const CURTAIN_IN_MS  = 200;   // entering interim: black cover slides off screen
+const CURTAIN_OUT_MS = 200;   // leaving interim:  black cover slides onto screen
+
 // ── Frame geometry (measured from the 1600×800 InterimScreen.png) ──
 // White-rectangle centres and inner size in image-pixels.
 // The canvas is also 1600×800, so these are direct screen coords.
@@ -165,20 +169,7 @@ export default class InterimScene extends Phaser.Scene {
     GameMap.preload(this);
     preloadGuns(this);
 
-    // Progress bar while assets load
-    const W = this.scale.width;
-    const H = this.scale.height;
-
-    const barBg = this.add.rectangle(W / 2, H - 32, W * 0.5, 12, 0x2d3342).setDepth(10);
-    const bar   = this.add.rectangle(W / 2 - (W * 0.25), H - 32, 0, 10, 0x88aaff).setDepth(11).setOrigin(0, 0.5);
-
-    this.load.on("progress", (value) => {
-      bar.width = W * 0.5 * value;
-    });
-
     this.load.on("complete", () => {
-      barBg.destroy();
-      bar.destroy();
       this._localReadyTime = Date.now();
       this._assetsReady = true;
       this._trySendReady();
@@ -244,6 +235,18 @@ export default class InterimScene extends Phaser.Scene {
       // Default to 0 if we have no scores yet (first pre-game interim).
       this._drawScoreDigits(frame.x, frame.y + SCORE_BELOW_FRAME_PX, points);
     }
+
+    // ── Entrance curtain: starts covering the screen, sweeps down to reveal ──
+    const curtainIn = this.add.rectangle(0, 0, W, H, 0x000000, 1)
+      .setOrigin(0, 0)
+      .setDepth(100);
+    this.tweens.add({
+      targets: curtainIn,
+      y: H,
+      duration: CURTAIN_IN_MS,
+      ease: "Power2",
+      onComplete: () => { try { curtainIn.destroy(); } catch (_) {} },
+    });
 
     // Safety: if the server never responds (crash / disconnect), don't
     // strand the player on the interim screen forever.
@@ -397,10 +400,24 @@ export default class InterimScene extends Phaser.Scene {
       this._visibilityHandler = null;
     }
 
-    this.scene.start("GameScene", {
-      room:     this._room,
-      client:   this._client,
-      username: this._username,
+    // ── Exit curtain: sweeps down from top to cover screen, then transition ──
+    const W = this.scale.width;
+    const H = this.scale.height;
+    const curtainOut = this.add.rectangle(0, -H, W, H, 0x000000, 1)
+      .setOrigin(0, 0)
+      .setDepth(100);
+    this.tweens.add({
+      targets: curtainOut,
+      y: 0,
+      duration: CURTAIN_OUT_MS,
+      ease: "Power2",
+      onComplete: () => {
+        this.scene.start("GameScene", {
+          room:     this._room,
+          client:   this._client,
+          username: this._username,
+        });
+      },
     });
   }
 }

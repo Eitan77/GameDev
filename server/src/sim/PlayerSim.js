@@ -92,7 +92,7 @@ const BEAM_DEFAULT_MUZZLE_NORM_Y = 0.5;
 
 const EPSILON = 1e-6;
 
-// Returns true if a rayCast fixture should be skipped (self-parts or non-terrain).
+// Legacy helper kept for any external callers; ground detection now uses _isBlockingFixture().
 function skipRayFixture(tag) {
   return tag === "playerBody" || tag === "foot" || tag === "arm"
       || (tag !== "ground" && tag !== "wall");
@@ -572,6 +572,19 @@ export default class PlayerSim {
     this.armBody.setLinearVelocity(Vec2(bv.x, bv.y));
   }
 
+  // Returns true if this fixture should count as a solid obstacle for ground/wall detection.
+  // Accepts both terrain AND other players' bodies, so players can stand on each other.
+  // Skips own body parts and all sensor fixtures (arms, etc.).
+  _isBlockingFixture(fixture) {
+    if (typeof fixture.isSensor === "function" && fixture.isSensor()) return false;
+    const tag = fixture.getUserData();
+    const body = fixture.getBody();
+    if (body === this.body || body === this.armBody) return false;
+    if (tag === "ground" || tag === "wall") return true;
+    if (tag === "playerBody" || tag === "foot") return true;
+    return false;
+  }
+
   // --------------------------
   // Ground rays
   // --------------------------
@@ -586,7 +599,7 @@ export default class PlayerSim {
       const end = Vec2(start.x, start.y + rayLenM);
 
       this.world.rayCast(start, end, (fixture) => {
-        if (skipRayFixture(fixture.getUserData())) return -1;
+        if (!this._isBlockingFixture(fixture)) return -1;
         anyHit = true;
         return 0;
       });
@@ -609,7 +622,7 @@ export default class PlayerSim {
 
       let hit = false;
       this.world.rayCast(start, end, (fixture) => {
-        if (skipRayFixture(fixture.getUserData())) return -1;
+        if (!this._isBlockingFixture(fixture)) return -1;
         hit = true;
         return 0;
       });
@@ -644,7 +657,7 @@ export default class PlayerSim {
 
         let hit = false;
         this.world.rayCast(start, end, (fixture) => {
-          if (skipRayFixture(fixture.getUserData())) return -1;
+          if (!this._isBlockingFixture(fixture)) return -1;
           hit = true;
           return 0;
         });
@@ -726,7 +739,7 @@ export default class PlayerSim {
       const scanEnd = Vec2(posNow.x + sideSign * scanLen, posNow.y);
       let minFrac = 1.0;
       this.world.rayCast(posNow, scanEnd, (fixture, pt, nrm, frac) => {
-        if (skipRayFixture(fixture.getUserData())) return -1;
+        if (!this._isBlockingFixture(fixture)) return -1;
         if (frac < minFrac) minFrac = frac;
         return frac;
       });
