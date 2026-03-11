@@ -9,11 +9,11 @@
 //
 // Match settings:
 //   MATCH_SIZE = 4  (standard 4-player lobbies)
-// ============================================================
+// =======================================as=====================
 
 import { Room, matchMaker } from "colyseus";
 
-const MATCH_SIZE = 1;
+const MATCH_SIZE = 2;
 
 export default class MatchmakingRoom extends Room {
   onCreate() {

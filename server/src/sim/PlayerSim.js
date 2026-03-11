@@ -1204,7 +1204,13 @@ export default class PlayerSim {
       }
     }
 
-    this.prevTiltDir = tiltDir;
+    // Only update when tilt was applicable this frame.
+    // When !tiltAllowedNow, _resetTiltState() already set prevTiltDir = 0;
+    // overwriting it here would cause landing to look like a mid-tilt continuation,
+    // which skips the "started past max" check and snaps the angle on touchdown.
+    if (tiltAllowedNow) {
+      this.prevTiltDir = tiltDir;
+    }
 
     return events;
   }
