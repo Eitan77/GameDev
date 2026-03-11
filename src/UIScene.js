@@ -4,6 +4,7 @@
 // - Draws UI in screen-space (no camera jitter, no zoom math).
 // - Health display: bottom-left (IMAGE BAR + 40 MARKERS)
 // - Round timer: top-center (pixel-art digits)
+// - Leaderboard: bottom-right (medal icons + player names)
 //
 // Timer art filenames expected in your client public assets:
 //   assets/images/timer_0.png ... timer_9.png
@@ -58,6 +59,44 @@ const HEALTH_INNER_H = 80;
 const TIMER_TOP_MARGIN_PX = 18;
 const TIMER_GAP_PX = 2; // spacing between digit sprites
 
+// ------------------------------
+// LEADERBOARD TWEAK KNOBS
+// ------------------------------
+// Master scale — change this one value to resize the whole leaderboard.
+const LB_SCALE = 1.2;
+
+// Position: distance from the bottom-right corner of the screen.
+// Increase LB_MARGIN_RIGHT_PX to move left. Increase LB_MARGIN_BOTTOM_PX to move up.
+const LB_MARGIN_RIGHT_PX = 24;
+const LB_MARGIN_BOTTOM_PX = 24;
+
+// Row / column sizing (all scaled by LB_SCALE)
+const LB_ROW_H_PX        = Math.round(32  * LB_SCALE); // height of each player row
+const LB_MEDAL_COL_W_PX  = Math.round(36  * LB_SCALE); // width of the medal (left) column
+const LB_NAME_COL_W_PX   = Math.round(130 * LB_SCALE); // width of the name (right) column
+const LB_PADDING_PX       = Math.round(6   * LB_SCALE); // inner padding around the grid
+const LB_CORNER_RADIUS    = Math.round(6   * LB_SCALE);
+
+// Background
+const LB_BG_COLOR = 0xffffff;
+const LB_BG_ALPHA = 0.85;
+
+// Gridlines
+const LB_GRID_COLOR = 0x000000;
+const LB_GRID_ALPHA = 0.6;
+const LB_GRID_LINE_W = 1;
+
+// Name text (font size scaled by LB_SCALE)
+const LB_NAME_FONT_SIZE_PX = Math.round(14 * LB_SCALE);
+const LB_NAME_FONT_FAMILY  = "Arial, sans-serif";
+const LB_NAME_COLOR        = "#000000";
+
+// Medal images (pixel art 16x16, display size scaled by LB_SCALE)
+const LB_MEDAL_SCALE = 1.8 * LB_SCALE; // display scale for medal sprites
+const LB_MAX_MEDALS  = 4;              // medal_1 .. medal_4
+
+const LB_DEPTH = 100;
+
 function clamp01(x) {
   if (x <= 0) return 0;
   if (x >= 1) return 1;
@@ -85,6 +124,13 @@ export default class UIScene extends Phaser.Scene {
     this.timerContainer = null; // container
     this.timerSprites = []; // [m1, m2, colon, s1, s2]
     this._lastTimerText = "";
+
+    // Leaderboard HUD
+    this.lbContainer = null;    // container holding everything
+    this.lbGraphics = null;     // background + gridlines
+    this.lbMedals = [];         // medal Image per row
+    this.lbNameTexts = [];      // Text per row
+    this._lastRankedHash = "";  // dirty check to avoid redrawing every frame
 
     // Resize handling
     this._onResize = null;
@@ -114,6 +160,14 @@ export default class UIScene extends Phaser.Scene {
       this.load.image("timer_colon", "assets/images/timer_colon.png");
     }
 
+    // Medal images for leaderboard
+    for (let i = 1; i <= LB_MAX_MEDALS; i++) {
+      const key = `medal_${i}`;
+      if (!this.textures.exists(key)) {
+        this.load.image(key, `assets/images/${key}.png`);
+      }
+    }
+
     // Health bar images
     if (!this.textures.exists(HEALTH_BG_KEY)) {
       this.load.image(HEALTH_BG_KEY, encodeURI(HEALTH_BG_SRC));
@@ -132,6 +186,7 @@ export default class UIScene extends Phaser.Scene {
 
     this.createHealthBar();
     this.createTimer();
+    this.createLeaderboard();
 
     // Initial layout
     this.ui(true);
@@ -164,6 +219,17 @@ export default class UIScene extends Phaser.Scene {
     this.timerContainer = null;
     this.timerSprites = [];
     this._lastTimerText = "";
+
+    for (const m of this.lbMedals) { try { m.destroy(); } catch (_) {} }
+    for (const t of this.lbNameTexts) { try { t.destroy(); } catch (_) {} }
+    try { this.lbGraphics?.destroy(); } catch (_) {}
+    try { this.lbContainer?.destroy(true); } catch (_) {}
+
+    this.lbContainer = null;
+    this.lbGraphics = null;
+    this.lbMedals = [];
+    this.lbNameTexts = [];
+    this._lastRankedHash = "";
   }
 
   // -----------------------------
@@ -298,6 +364,135 @@ export default class UIScene extends Phaser.Scene {
     this.timerContainer.y = Math.round(TIMER_TOP_MARGIN_PX + glyphH / 2);
   }
 
+  // -----------------------------
+  // Leaderboard creation
+  // -----------------------------
+  createLeaderboard() {
+    // Force pixel-art filtering on medal textures
+    for (let i = 1; i <= LB_MAX_MEDALS; i++) {
+      try {
+        this.textures.get(`medal_${i}`).setFilter(Phaser.Textures.FilterMode.NEAREST);
+      } catch (_) {}
+    }
+
+    this.lbContainer = this.add.container(0, 0);
+    this.lbContainer.setDepth(LB_DEPTH);
+    this.lbContainer.setVisible(false);
+
+    this.lbGraphics = this.add.graphics();
+    this.lbContainer.add(this.lbGraphics);
+  }
+
+  // Rebuild leaderboard contents when rankings change.
+  _updateLeaderboard(gameScene, w, h) {
+    if (!this.lbContainer || !this.lbGraphics) return;
+
+    const ranked = gameScene?.getRankedPlayers?.() || [];
+    if (ranked.length === 0) {
+      this.lbContainer.setVisible(false);
+      return;
+    }
+
+    // Hash-based dirty check: only redraw when rankings actually change
+    const hash = ranked.map((r) => `${r.sid}:${r.name}:${r.order}`).join("|");
+    if (hash === this._lastRankedHash) return;
+    this._lastRankedHash = hash;
+
+    // Destroy old per-row objects
+    for (const m of this.lbMedals) { try { m.destroy(); } catch (_) {} }
+    for (const t of this.lbNameTexts) { try { t.destroy(); } catch (_) {} }
+    this.lbMedals = [];
+    this.lbNameTexts = [];
+
+    const rowCount = ranked.length;
+    const gridW = LB_MEDAL_COL_W_PX + LB_NAME_COL_W_PX;
+    const totalW = LB_PADDING_PX + gridW + LB_PADDING_PX;
+    const totalH = LB_PADDING_PX + rowCount * LB_ROW_H_PX + LB_PADDING_PX;
+
+    // ---- Draw background + gridlines ----
+    this.lbGraphics.clear();
+
+    // White background
+    this.lbGraphics.fillStyle(LB_BG_COLOR, LB_BG_ALPHA);
+    this.lbGraphics.fillRoundedRect(0, 0, totalW, totalH, LB_CORNER_RADIUS);
+
+    // Border
+    this.lbGraphics.lineStyle(LB_GRID_LINE_W, LB_GRID_COLOR, LB_GRID_ALPHA);
+    this.lbGraphics.strokeRoundedRect(0, 0, totalW, totalH, LB_CORNER_RADIUS);
+
+    // Vertical line between medal and name columns
+    const colLineX = LB_PADDING_PX + LB_MEDAL_COL_W_PX;
+    this.lbGraphics.beginPath();
+    this.lbGraphics.moveTo(colLineX, LB_PADDING_PX);
+    this.lbGraphics.lineTo(colLineX, totalH - LB_PADDING_PX);
+    this.lbGraphics.strokePath();
+
+    // Horizontal lines between rows
+    for (let i = 1; i < rowCount; i++) {
+      const lineY = LB_PADDING_PX + i * LB_ROW_H_PX;
+      this.lbGraphics.beginPath();
+      this.lbGraphics.moveTo(LB_PADDING_PX, lineY);
+      this.lbGraphics.lineTo(totalW - LB_PADDING_PX, lineY);
+      this.lbGraphics.strokePath();
+    }
+
+    // ---- Per-row: medal image + name text ----
+    for (let i = 0; i < rowCount; i++) {
+      const entry = ranked[i];
+      const rowCenterY = LB_PADDING_PX + i * LB_ROW_H_PX + LB_ROW_H_PX / 2;
+
+      // Medal image (medal_1 for rank 1, medal_2 for rank 2, etc.)
+      const medalIdx = Math.min(i + 1, LB_MAX_MEDALS);
+      const medalKey = `medal_${medalIdx}`;
+      const medalX = LB_PADDING_PX + LB_MEDAL_COL_W_PX / 2;
+
+      if (this.textures.exists(medalKey)) {
+        const medal = this.add.image(medalX, rowCenterY, medalKey);
+        medal.setOrigin(0.5, 0.5);
+        medal.setScale(LB_MEDAL_SCALE);
+        this.lbContainer.add(medal);
+        this.lbMedals.push(medal);
+      }
+
+      // Player name text
+      const nameX = colLineX + 8;
+      const maxNameW = LB_NAME_COL_W_PX - 16;
+      const displayName = entry.name.length > 14
+        ? entry.name.slice(0, 13) + "\u2026"
+        : entry.name;
+
+      const nameText = this.add.text(nameX, rowCenterY, displayName, {
+        fontFamily: LB_NAME_FONT_FAMILY,
+        fontSize: `${LB_NAME_FONT_SIZE_PX}px`,
+        color: LB_NAME_COLOR,
+      });
+      nameText.setOrigin(0, 0.5);
+      this.lbContainer.add(nameText);
+      this.lbNameTexts.push(nameText);
+    }
+
+    // Position and show
+    this._layoutLeaderboard(w, h, rowCount);
+    this.lbContainer.setVisible(true);
+  }
+
+  // Position the leaderboard container at the bottom-right corner.
+  _layoutLeaderboard(w, h, rowCount) {
+    if (!this.lbContainer) return;
+    if (rowCount == null) {
+      // Infer from current content
+      rowCount = this.lbNameTexts.length;
+    }
+    if (rowCount <= 0) return;
+
+    const gridW = LB_MEDAL_COL_W_PX + LB_NAME_COL_W_PX;
+    const totalW = LB_PADDING_PX + gridW + LB_PADDING_PX;
+    const totalH = LB_PADDING_PX + rowCount * LB_ROW_H_PX + LB_PADDING_PX;
+
+    this.lbContainer.x = Math.round(w - totalW - LB_MARGIN_RIGHT_PX);
+    this.lbContainer.y = Math.round(h - totalH - LB_MARGIN_BOTTOM_PX);
+  }
+
   // ------------------------------------------------------------
   // ui(force)
   // ALL overlay drawing/updates go here.
@@ -368,6 +563,15 @@ export default class UIScene extends Phaser.Scene {
     // - first run (container y still 0)
     if (force || changed || (this.timerContainer && this.timerContainer.y === 0)) {
       this.layoutTimer(w);
+    }
+
+    // -------------------------
+    // Leaderboard (bottom-right)
+    // -------------------------
+    this._updateLeaderboard(gameScene, w, h);
+
+    if (force) {
+      this._layoutLeaderboard(w, h);
     }
   }
 

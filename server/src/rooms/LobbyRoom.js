@@ -447,10 +447,12 @@ export default class LobbyRoom extends Room {
     ps.health = DEFAULT_MAX_HEALTH;
     ps.dead = false;
 
+    const baseId = String(this.defaultRespawn?.baseId || "");
+    ps.cpOrder = baseId ? checkpointOrderFromBaseId(baseId) : 0;
+
     this.state.players.set(client.sessionId, ps);
 
     const sid = client.sessionId;
-    const baseId = String(this.defaultRespawn?.baseId || "");
     if (baseId) this.playerCheckpointBaseId.set(sid, baseId);
     this.playerRespawnBySid.set(sid, { x: spawnX, y: spawnY });
     this.playerInsideCheckpoint.set(sid, new Set());
@@ -583,6 +585,10 @@ export default class LobbyRoom extends Room {
 
     this.playerCheckpointBaseId.set(sid, b);
     this.playerRespawnBySid.set(sid, { x: spawn.x, y: spawn.y });
+
+    // Update synced state so all clients see the checkpoint order (leaderboard)
+    const st = this.state.players.get(sid);
+    if (st) st.cpOrder = checkpointOrderFromBaseId(b);
 
     this.broadcast("checkpoint", { sid, id: b, x: spawn.x, y: spawn.y });
   }
@@ -762,6 +768,7 @@ export default class LobbyRoom extends Room {
       if (baseId) this.playerCheckpointBaseId.set(sid, baseId);
       this.playerRespawnBySid.set(sid, { x: spawnX, y: spawnY });
       this.playerInsideCheckpoint.set(sid, new Set());
+      st.cpOrder = baseId ? checkpointOrderFromBaseId(baseId) : 0;
       this.playerInputs.set(sid, {});
     }
 

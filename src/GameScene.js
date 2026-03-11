@@ -215,6 +215,10 @@ export default class GameScene extends Phaser.Scene {
     // checkpoint marker sprites (no collision)
     this.checkpointSprites = [];
 
+    // Leaderboard: join order tracking for tie-breaking
+    this.checkpointData = new Map(); // sid → { joinOrder }
+    this._joinSeq = 0;              // monotonic counter for initial load order
+
     this.dragActive = false;
     this.dragX = 0;
     this.dragY = 0;
@@ -414,6 +418,11 @@ export default class GameScene extends Phaser.Scene {
       const p = new Player({ scene: this, sessionId, isLocal });
       this.players.set(sessionId, p);
 
+      // Track join order for leaderboard tie-breaking
+      if (!this.checkpointData.has(sessionId)) {
+        this.checkpointData.set(sessionId, { joinOrder: this._joinSeq++ });
+      }
+
       p.setTargetFromState(playerState);
 
       if (isLocal) {
@@ -473,6 +482,8 @@ export default class GameScene extends Phaser.Scene {
         p.destroy();
         this.players.delete(sessionId);
       }
+
+      this.checkpointData.delete(sessionId);
 
       if (this.localPlayer?.sessionId === sessionId) {
         this.localPlayer = null;
@@ -658,6 +669,32 @@ export default class GameScene extends Phaser.Scene {
     );
   }
 
+  // Returns players sorted by checkpoint progress for the leaderboard.
+  // Reads cpOrder from the server-synced PlayerState (authoritative).
+  getRankedPlayers() {
+    const entries = [];
+
+    const players = this.room?.state?.players;
+    if (!players || typeof players.forEach !== "function") return entries;
+
+    players.forEach((st, sid) => {
+      const player = this.players.get(sid);
+      const name = player?.name || String(st?.name || "Player");
+      const cpOrder = Number(st?.cpOrder) || 0;
+      const joinOrder = this.checkpointData.get(sid)?.joinOrder ?? 9999;
+      entries.push({ sid, name, order: cpOrder, joinOrder });
+    });
+
+    // Primary: highest checkpoint order first.
+    // Tie-break (same checkpoint): whoever joined first (lower joinOrder).
+    entries.sort((a, b) => {
+      if (a.order !== b.order) return b.order - a.order;
+      return a.joinOrder - b.joinOrder;
+    });
+
+    return entries;
+  }
+
   createPowerUpView(puState) {
     const type = puState?.type;
 
@@ -716,6 +753,9 @@ export default class GameScene extends Phaser.Scene {
       } catch (_) {}
     }
     this.checkpointSprites = [];
+
+    this.checkpointData.clear();
+    this._joinSeq = 0;
 
     try { this._coverOverlay?.destroy(); } catch (_) {}
     this._coverOverlay = null;

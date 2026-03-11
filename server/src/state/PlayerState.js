@@ -29,6 +29,9 @@ export default class PlayerState extends Schema {
     // ✅ round points (persists across rounds in the same room)
     this.points = 0;
 
+    // ✅ checkpoint progress (leaderboard ranking, reset each round)
+    this.cpOrder = 0;
+
     // optional debug
     this.gunX = 0;
     this.gunY = 0;
@@ -58,6 +61,8 @@ defineTypes(PlayerState, {
   dead: "boolean",
 
   points: "uint16",
+
+  cpOrder: "uint16",
 
   gunX: "int32",
   gunY: "int32",
