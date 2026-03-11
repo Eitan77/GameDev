@@ -215,9 +215,10 @@ export default class GameScene extends Phaser.Scene {
     // checkpoint marker sprites (no collision)
     this.checkpointSprites = [];
 
-    // Leaderboard: join order tracking for tie-breaking
-    this.checkpointData = new Map(); // sid → { joinOrder }
-    this._joinSeq = 0;              // monotonic counter for initial load order
+    // Leaderboard: tie-breaking data per player
+    this.checkpointData = new Map(); // sid → { joinOrder, cpHitSeq }
+    this._joinSeq = 0;    // monotonic counter for room join order (final fallback)
+    this._cpHitSeq = 0;   // monotonic counter incremented each time any player upgrades a checkpoint
 
     this.dragActive = false;
     this.dragX = 0;
@@ -418,9 +419,9 @@ export default class GameScene extends Phaser.Scene {
       const p = new Player({ scene: this, sessionId, isLocal });
       this.players.set(sessionId, p);
 
-      // Track join order for leaderboard tie-breaking
+      // Track join order and checkpoint-hit order for leaderboard tie-breaking
       if (!this.checkpointData.has(sessionId)) {
-        this.checkpointData.set(sessionId, { joinOrder: this._joinSeq++ });
+        this.checkpointData.set(sessionId, { joinOrder: this._joinSeq++, cpHitSeq: Infinity });
       }
 
       p.setTargetFromState(playerState);
@@ -470,6 +471,15 @@ export default class GameScene extends Phaser.Scene {
           "gunA",
         ]
       );
+
+      // When cpOrder increases, record the sequence so first-to-reach wins ties.
+      this.callbacks.listen(playerState, "cpOrder", (newVal, prevVal) => {
+        const data = this.checkpointData.get(sessionId);
+        if (!data) return;
+        if (Number(newVal) > Number(prevVal || 0)) {
+          data.cpHitSeq = this._cpHitSeq++;
+        }
+      });
     };
 
     this.callbacks.onAdd("players", (playerState, sessionId) => {
@@ -681,14 +691,18 @@ export default class GameScene extends Phaser.Scene {
       const player = this.players.get(sid);
       const name = player?.name || String(st?.name || "Player");
       const cpOrder = Number(st?.cpOrder) || 0;
-      const joinOrder = this.checkpointData.get(sid)?.joinOrder ?? 9999;
-      entries.push({ sid, name, order: cpOrder, joinOrder });
+      const data = this.checkpointData.get(sid);
+      const cpHitSeq = data?.cpHitSeq ?? Infinity;
+      const joinOrder = data?.joinOrder ?? 9999;
+      entries.push({ sid, name, order: cpOrder, cpHitSeq, joinOrder });
     });
 
     // Primary: highest checkpoint order first.
-    // Tie-break (same checkpoint): whoever joined first (lower joinOrder).
+    // Tie-break (same checkpoint): whoever hit that checkpoint first (lower cpHitSeq).
+    // Final fallback: whoever joined the room first (lower joinOrder).
     entries.sort((a, b) => {
       if (a.order !== b.order) return b.order - a.order;
+      if (a.cpHitSeq !== b.cpHitSeq) return a.cpHitSeq - b.cpHitSeq;
       return a.joinOrder - b.joinOrder;
     });
 
@@ -756,6 +770,7 @@ export default class GameScene extends Phaser.Scene {
 
     this.checkpointData.clear();
     this._joinSeq = 0;
+    this._cpHitSeq = 0;
 
     try { this._coverOverlay?.destroy(); } catch (_) {}
     this._coverOverlay = null;
