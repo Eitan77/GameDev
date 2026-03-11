@@ -29,10 +29,37 @@ src/
   └── counter.js               # Score/timer utilities
 
 public/                         # Static assets (images, maps)
-server/                         # Backend server code (NOT frontend)
+server/
+  └── src/
+      ├── rooms/
+      │   ├── LobbyRoom.js         # Main game room: physics, logic, checkpoints, kills, rounds
+      │   ├── MatchmakingRoom.js   # Queue management, seat reservation
+      │   └── GameRoom.js          # Secondary/alternate game room
+      └── index.js                 # Server entry point
 package.json
 vite.config.js
 ```
+
+## Feature → File → Function Map
+Go here first before searching. This eliminates most grep passes.
+
+| Feature | File | Key Function / Area |
+|---|---|---|
+| Leaderboard / rankings | `src/GameScene.js` | `getRankedPlayers()` |
+| Player state sync (client) | `src/GameScene.js` | `handlePlayerAdded()`, `callbacks.listen()` |
+| Checkpoint activation | `server/src/rooms/LobbyRoom.js` | `tryActivateCheckpoint()` |
+| Checkpoint collision detection | `server/src/rooms/LobbyRoom.js` | `updatePlayerCheckpoints()` |
+| Checkpoint order parsing | `server/src/rooms/LobbyRoom.js` | `checkpointOrderFromBaseId()`, `shouldUpgradeCheckpoint()` |
+| Kill zones | `server/src/rooms/LobbyRoom.js` | `updateKillZones()` |
+| Player death / respawn | `server/src/rooms/LobbyRoom.js` | `killPlayer()`, `respawnPlayer()` |
+| Round reset | `server/src/rooms/LobbyRoom.js` | round reset block (~line 760) |
+| Matchmaking queue | `server/src/rooms/MatchmakingRoom.js` | `_tryMakeMatch()` |
+| Player rendering / sprites | `src/player.js` | `setTargetFromState()`, `applyStateChanges()` |
+| Gun definitions | `src/gunCatalog.js` | `GUN_CATALOG` object, `preloadGuns()` |
+| Gun pickup entities | `src/GunPowerUp.js` | — |
+| Map loading + spawn points | `src/GameMap.js` | — |
+| HUD (health, timer) | `src/UIScene.js` | — |
+| Interim / scores screen | `src/InterimScene.js` | — |
 
 ## Architecture Principles
 
@@ -52,6 +79,30 @@ MainMenuScene → MatchmakingScene → InterimScene → GameScene
 2. Server updates physics & game state
 3. Server broadcasts room state to all clients (Colyseus sync)
 4. Client receives updates via `onMessage()` callbacks and updates sprites
+
+### Colyseus Client Patterns (GameScene.js)
+```javascript
+// Callbacks handle — always obtained this way (NOT `new Callbacks`)
+this.callbacks = Callbacks.get(this.room);  // imported from @colyseus/schema
+
+// Collection listeners
+this.callbacks.onAdd("players", (playerState, sessionId) => { });
+this.callbacks.onRemove("players", (playerState, sessionId) => { });
+
+// Property listener — fires when value changes; receives (newVal, prevVal)
+this.callbacks.listen(playerState, "propName", (newVal, prevVal) => { });
+
+// Bulk property listeners via helper
+registerStatePropertyListeners(this.callbacks, playerState, handler, ["prop1", "prop2"]);
+```
+
+### PlayerState Properties (server-synced, read on client via `room.state.players`)
+- **Position/rotation**: `x`, `y`, `a` (angle), `dir`
+- **Arm/gun transform**: `armX`, `armY`, `armA`, `gunX`, `gunY`, `gunA`
+- **Stats**: `health`, `maxHealth`, `dead`
+- **Gun**: `gunId`, `ammo`
+- **Progression**: `cpOrder` (numeric checkpoint order, higher = further ahead)
+- **Identity**: `name`
 
 ## Code Conventions
 
@@ -108,10 +159,11 @@ export const CONSTANT = 123;
 
 ### GameScene.js
 - Receives `reservation` and `client` from MatchmakingScene
-- Loads Tiled map and physics bodies from server
-- Sets up Colyseus room listeners for player/entity updates
+- Sets up Colyseus room listeners for player/entity updates via `handlePlayerAdded()`
 - Renders sprites, handles visual FX (beams, powerup effects)
-- Listens to server state changes and updates sprite positions/animations
+- `getRankedPlayers()` — sorts players by `cpOrder` for the leaderboard; tie-break uses `cpHitSeq` (who hit the checkpoint first), then `joinOrder`
+- `checkpointData` map: `sid → { joinOrder, cpHitSeq }` — tracks arrival order per checkpoint
+- `_cpHitSeq` counter increments each time any player's `cpOrder` increases
 
 ### player.js (class Player)
 - Stores player entity data (position, health, rotation, armed status)
@@ -144,6 +196,16 @@ export const CONSTANT = 123;
 ### VisibilityManager.js
 - Manages what's visible to the camera
 - Culling/visibility optimizations
+
+### server/src/rooms/LobbyRoom.js
+- Authoritative game room: physics step, collision, rounds, scoring
+- `tryActivateCheckpoint(sid, baseId)` — upgrades a player's checkpoint if `baseId` is further ahead; updates `st.cpOrder`
+- `updatePlayerCheckpoints()` — called each tick; detects player overlap with checkpoint trigger rects
+- `checkpointOrderFromBaseId(id)` — extracts numeric order from checkpoint ID string (e.g. `"cp03"` → `3`)
+- `shouldUpgradeCheckpoint(cur, new)` — returns true only if new checkpoint is strictly ahead
+- `checkpointSpawnsByBaseId` map: `baseId → {x,y}` spawn position
+- `checkpointTriggers` array: `[{ baseId, x, y, w, h }]` trigger rects from Tiled
+- `playerCheckpointBaseId` map: `sid → baseId` current checkpoint per player
 
 ## Critical Constants & Tuning
 
