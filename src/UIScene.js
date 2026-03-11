@@ -97,6 +97,9 @@ const LB_MAX_MEDALS  = 4;              // medal_1 .. medal_4
 
 const LB_DEPTH = 100;
 
+// Duration (ms) of the rank-swap slide animation for name texts.
+const LB_SWAP_DURATION_MS = 280;
+
 function clamp01(x) {
   if (x <= 0) return 0;
   if (x >= 1) return 1;
@@ -381,9 +384,11 @@ export default class UIScene extends Phaser.Scene {
 
     this.lbGraphics = this.add.graphics();
     this.lbContainer.add(this.lbGraphics);
+
+    this._lbRowsByPlayer = new Map(); // sid -> { nameText }
   }
 
-  // Rebuild leaderboard contents when rankings change.
+  // Route leaderboard updates: hard rebuild when player count changes, animate otherwise.
   _updateLeaderboard(gameScene, w, h) {
     if (!this.lbContainer || !this.lbGraphics) return;
 
@@ -393,16 +398,35 @@ export default class UIScene extends Phaser.Scene {
       return;
     }
 
-    // Hash-based dirty check: only redraw when rankings actually change
+    // Hash-based dirty check: only act when rankings actually change
     const hash = ranked.map((r) => `${r.sid}:${r.name}:${r.order}`).join("|");
     if (hash === this._lastRankedHash) return;
+
+    const prevRowCount = this.lbNameTexts.length;
     this._lastRankedHash = hash;
+
+    if (ranked.length !== prevRowCount) {
+      // Player count changed — full rebuild, no animation
+      this._rebuildLeaderboard(ranked, w, h);
+    } else {
+      // Only rank order changed — slide names to new positions
+      this._animateLeaderboardSwap(ranked);
+    }
+  }
+
+  // Full destroy-and-recreate of all leaderboard objects.
+  _rebuildLeaderboard(ranked, w, h) {
+    // Kill any in-progress swap tweens
+    for (const row of this._lbRowsByPlayer.values()) {
+      try { this.tweens.killTweensOf(row.nameText); } catch (_) {}
+    }
 
     // Destroy old per-row objects
     for (const m of this.lbMedals) { try { m.destroy(); } catch (_) {} }
     for (const t of this.lbNameTexts) { try { t.destroy(); } catch (_) {} }
     this.lbMedals = [];
     this.lbNameTexts = [];
+    this._lbRowsByPlayer.clear();
 
     const rowCount = ranked.length;
     const gridW = LB_MEDAL_COL_W_PX + LB_NAME_COL_W_PX;
@@ -456,7 +480,6 @@ export default class UIScene extends Phaser.Scene {
 
       // Player name text
       const nameX = colLineX + 8;
-      const maxNameW = LB_NAME_COL_W_PX - 16;
       const displayName = entry.name.length > 14
         ? entry.name.slice(0, 13) + "\u2026"
         : entry.name;
@@ -469,11 +492,28 @@ export default class UIScene extends Phaser.Scene {
       nameText.setOrigin(0, 0.5);
       this.lbContainer.add(nameText);
       this.lbNameTexts.push(nameText);
+      this._lbRowsByPlayer.set(entry.sid, { nameText });
     }
 
     // Position and show
     this._layoutLeaderboard(w, h, rowCount);
     this.lbContainer.setVisible(true);
+  }
+
+  // Slide existing name texts to their new rank positions.
+  _animateLeaderboardSwap(ranked) {
+    ranked.forEach((entry, i) => {
+      const row = this._lbRowsByPlayer.get(entry.sid);
+      if (!row) return;
+      const targetY = LB_PADDING_PX + i * LB_ROW_H_PX + LB_ROW_H_PX / 2;
+      this.tweens.killTweensOf(row.nameText);
+      this.tweens.add({
+        targets: row.nameText,
+        y: targetY,
+        duration: LB_SWAP_DURATION_MS,
+        ease: 'Power2',
+      });
+    });
   }
 
   // Position the leaderboard container at the bottom-right corner.
