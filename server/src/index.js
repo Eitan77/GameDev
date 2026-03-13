@@ -10,6 +10,8 @@
 import { defineServer, defineRoom } from "colyseus";
 import MatchmakingRoom from "./rooms/MatchmakingRoom.js";
 import GameRoom from "./rooms/GameRoom.js";
+import PartyRoom from "./rooms/PartyRoom.js";
+import { activeParties } from "./rooms/partyLookup.js";
 
 const PORT = Number(process.env.PORT || 2567);
 
@@ -20,6 +22,9 @@ const server = defineServer({
 
     // ✅ actual game instances (each match creates a new one)
     lobby: defineRoom(GameRoom),
+
+    // ✅ party lobby rooms (1 per player, friends join by code)
+    party: defineRoom(PartyRoom),
   },
 
   // ✅ Allow browser to hit colyseus endpoints (CORS)
@@ -33,6 +38,19 @@ const server = defineServer({
     });
 
     app.get("/health", (_req, res) => res.json({ ok: true }));
+
+    // Party code lookup: resolve a 6-digit code to a Colyseus roomId
+    app.get("/party/lookup", (req, res) => {
+      const code = String(req.query.code || "").toUpperCase().trim();
+      if (!code || code.length !== 6) {
+        return res.status(400).json({ error: "Invalid code" });
+      }
+      const roomId = activeParties.get(code);
+      if (!roomId) {
+        return res.status(404).json({ error: "Party not found" });
+      }
+      res.json({ roomId });
+    });
   },
 });
 
