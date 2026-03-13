@@ -11,8 +11,7 @@
 import { Room, matchMaker } from "colyseus";
 import { activeParties, partyCodesByRoom } from "./partyLookup.js";
 
-// Charset excluding ambiguous characters (0/O, 1/I/L)
-const CODE_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+const CODE_CHARS = "0123456789";
 const CODE_LEN   = 6;
 const MAX_RETRIES = 20;
 

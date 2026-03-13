@@ -21,29 +21,29 @@ const COLYSEUS_URL = `${window.location.protocol}//${window.location.hostname}:2
 // ============================================================
 
 // ---- Title ----
-const TITLE_FONT_SIZE     = "48px";
-const TITLE_OFFSET_Y      = -230;       // relative to center Y
+const TITLE_FONT_SIZE     = "60px";
+const TITLE_OFFSET_Y      = -280;       // relative to center Y
 
 // ---- Username input ----
-const NAME_LABEL_OFFSET_Y = -150;       // relative to center Y
-const NAME_INPUT_W        = 360;
-const NAME_INPUT_H        = 56;
+const NAME_LABEL_OFFSET_Y = -180;       // relative to center Y
+const NAME_INPUT_W        = 460;
+const NAME_INPUT_H        = 86;
 const NAME_INPUT_OFFSET_Y = -105;       // relative to center Y
-const NAME_FONT_SIZE      = "24px";
-const NAME_LABEL_FONT_SIZE = "18px";
+const NAME_FONT_SIZE      = "40px";
+const NAME_LABEL_FONT_SIZE = "48px";
 
 // ---- START button ----
 const START_BTN_SCALE     = 1;
-const START_BTN_OFFSET_Y  = -10;        // relative to center Y
+const START_BTN_OFFSET_Y  = 30;        // relative to center Y
 
 // ---- CUSTOM button ----
-const CUSTOM_BTN_W        = 280;
-const CUSTOM_BTN_H        = 70;
-const CUSTOM_BTN_OFFSET_Y = 80;         // relative to center Y
-const CUSTOM_FONT_SIZE    = "40px";
-const CUSTOM_BG_COLOR     = 0x1a1a2e;
-const CUSTOM_BG_HOVER     = 0x252545;
-const CUSTOM_TEXT_COLOR   = "#8b0000";
+const CUSTOM_BTN_W        = 380;
+const CUSTOM_BTN_H        = 110;
+const CUSTOM_BTN_OFFSET_Y = 200;         // relative to center Y
+const CUSTOM_FONT_SIZE    = "60px";
+const CUSTOM_BG_COLOR     = 0x0d2e5e;   // dark blue
+const CUSTOM_BG_HOVER     = 0x1a4a8a;   // lighter blue on hover
+const CUSTOM_TEXT_COLOR   = "#a0cfff";   // light blue text
 const CUSTOM_STROKE_COLOR = 0x000000;
 const CUSTOM_STROKE_WIDTH = 4;
 
@@ -55,7 +55,7 @@ const STATUS_FONT_SIZE    = "18px";
 const SLOT_SIZE           = 130;
 const SLOT_GAP            = 10;
 const SLOT_X              = 100;         // center X of the slot column
-const SLOT_START_Y        = 70;          // top edge of first slot
+const SLOT_START_Y        = 50;          // top edge of first slot
 const SLOT_COUNT          = 4;
 const SLOT_HEAD_PADDING   = 16;          // inset from slot edge to head image
 const SLOT_HEAD_OFFSET_Y  = -8;          // nudge head up within slot
@@ -67,30 +67,37 @@ const SLOT_EMPTY_STROKE   = 0.3;
 const SLOT_FILLED_STROKE  = 0.8;
 
 // ---- Code input + JOIN (bottom-left) ----
-const CODE_AREA_OFFSET_Y  = -150;       // from bottom edge of screen
-const CODE_LABEL_OFFSET_Y = -28;        // label above code input
+const CODE_AREA_X         = 100;        // center X of the entire bottom-left code area
+const CODE_AREA_OFFSET_Y  = -120;       // from bottom edge of screen
+const CODE_LABEL_OFFSET_X = 50;          // horizontal shift of "ENTER CODE TO JOIN" label from CODE_AREA_X
+const CODE_LABEL_OFFSET_Y = -35;        // label above code input
 const CODE_INPUT_W        = 180;
 const CODE_INPUT_H        = 40;
-const CODE_INPUT_SHIFT_X  = -35;        // shift code field left of area center
+const CODE_INPUT_SHIFT_X  = 20;        // shift code field right of CODE_AREA_X
+const CODE_INPUT_SHIFT_Y  = 8;          // shift code field + JOIN button vertically from codeAreaY
 const CODE_FONT_SIZE      = "20px";
-const CODE_LABEL_FONT_SIZE = "12px";
+const CODE_LABEL_FONT_SIZE = "20px";
 
 const JOIN_BTN_W          = 70;
 const JOIN_BTN_GAP        = 10;         // gap between code input and JOIN
 const JOIN_FONT_SIZE      = "18px";
-const JOIN_BG_COLOR       = 0x1a1a2e;
-const JOIN_BG_HOVER       = 0x252545;
+const JOIN_BG_COLOR       = 0x2a6b2a;   // dark green
+const JOIN_BG_HOVER       = 0x3a8f3a;   // lighter green on hover
+const JOIN_TEXT_COLOR     = "#e0ffe0";   // light green text
 
 // ---- Own party code display ----
-const MY_CODE_LABEL_OFFSET_Y = 38;      // below code input
-const MY_CODE_TEXT_OFFSET_Y  = 65;       // below code input
+const MY_CODE_LABEL_OFFSET_X = 30;       // horizontal shift of "YOUR PARTY CODE" label from CODE_AREA_X
+const MY_CODE_TEXT_OFFSET_X  = 0;       // horizontal shift of the code number from CODE_AREA_X
+const MY_CODE_LABEL_OFFSET_Y = 50;      // below code input
+const MY_CODE_TEXT_OFFSET_Y  = 82;       // below code input
 const MY_CODE_FONT_SIZE      = "28px";
-const MY_CODE_LABEL_FONT_SIZE = "12px";
+const MY_CODE_LABEL_FONT_SIZE = "20px";
 const MY_CODE_COLOR          = "#8b0000";
 
 // ---- Leave party button ----
 const LEAVE_BTN_W         = 160;
 const LEAVE_BTN_H         = 36;
+const LEAVE_BTN_OFFSET_X  = 160;          // horizontal shift of leave button from CODE_AREA_X
 const LEAVE_BTN_OFFSET_Y  = 100;        // below code input
 const LEAVE_FONT_SIZE     = "14px";
 const LEAVE_BG_COLOR      = 0x3a1515;
@@ -177,7 +184,7 @@ export default class MainMenuScene extends Phaser.Scene {
 
     // ---- Title ----
     this._titleText = this.add
-      .text(0, 0, "Getaway Shootout (Clone)", {
+      .text(0, 0, "Game Development Test", {
         fontFamily: "Arial, sans-serif",
         fontSize: TITLE_FONT_SIZE,
         color: "#ffffff",
@@ -345,7 +352,7 @@ export default class MainMenuScene extends Phaser.Scene {
       .text(0, 0, "JOIN", {
         fontFamily: "Arial Black, Arial, sans-serif",
         fontSize: JOIN_FONT_SIZE,
-        color: "#000000",
+        color: JOIN_TEXT_COLOR,
         fontStyle: "bold",
       })
       .setOrigin(0.5);
@@ -501,23 +508,24 @@ export default class MainMenuScene extends Phaser.Scene {
     this._statusText?.setPosition(cx, cy + STATUS_OFFSET_Y);
 
     // ---- Bottom-left: code input area ----
-    const codeAreaX = SLOT_X;
+    const codeAreaX = CODE_AREA_X;
     const codeAreaY = h + CODE_AREA_OFFSET_Y;
 
-    this._codeLabel?.setPosition(codeAreaX, codeAreaY + CODE_LABEL_OFFSET_Y);
+    this._codeLabel?.setPosition(codeAreaX + CODE_LABEL_OFFSET_X, codeAreaY + CODE_LABEL_OFFSET_Y);
 
     const codeFieldX = codeAreaX + CODE_INPUT_SHIFT_X;
-    const joinBtnX = codeFieldX + CODE_INPUT_W / 2 + JOIN_BTN_W / 2 + JOIN_BTN_GAP;
-    this._codeBg?.setPosition(codeFieldX, codeAreaY);
-    this._codeText?.setPosition(codeFieldX, codeAreaY);
-    this._joinBtnBg?.setPosition(joinBtnX, codeAreaY);
-    this._joinBtnText?.setPosition(joinBtnX, codeAreaY);
+    const codeFieldY = codeAreaY + CODE_INPUT_SHIFT_Y;
+    const joinBtnX   = codeFieldX + CODE_INPUT_W / 2 + JOIN_BTN_W / 2 + JOIN_BTN_GAP;
+    this._codeBg?.setPosition(codeFieldX, codeFieldY);
+    this._codeText?.setPosition(codeFieldX, codeFieldY);
+    this._joinBtnBg?.setPosition(joinBtnX, codeFieldY);
+    this._joinBtnText?.setPosition(joinBtnX, codeFieldY);
 
-    this._myCodeLabel?.setPosition(codeAreaX, codeAreaY + MY_CODE_LABEL_OFFSET_Y);
-    this._myCodeText?.setPosition(codeAreaX, codeAreaY + MY_CODE_TEXT_OFFSET_Y);
+    this._myCodeLabel?.setPosition(codeAreaX + MY_CODE_LABEL_OFFSET_X, codeAreaY + MY_CODE_LABEL_OFFSET_Y);
+    this._myCodeText?.setPosition(codeAreaX + MY_CODE_TEXT_OFFSET_X, codeAreaY + MY_CODE_TEXT_OFFSET_Y);
 
-    this._leaveBtnBg?.setPosition(codeAreaX, codeAreaY + LEAVE_BTN_OFFSET_Y);
-    this._leaveBtnText?.setPosition(codeAreaX, codeAreaY + LEAVE_BTN_OFFSET_Y);
+    this._leaveBtnBg?.setPosition(codeAreaX + LEAVE_BTN_OFFSET_X, codeAreaY + LEAVE_BTN_OFFSET_Y);
+    this._leaveBtnText?.setPosition(codeAreaX + LEAVE_BTN_OFFSET_X, codeAreaY + LEAVE_BTN_OFFSET_Y);
   }
 
   // ============================================================
@@ -871,10 +879,10 @@ export default class MainMenuScene extends Phaser.Scene {
       this._refreshCodeField();
       return;
     }
-    if (key.length === 1 && /^[a-zA-Z0-9]$/.test(key)) {
+    if (key.length === 1 && /^[0-9]$/.test(key)) {
       const cur = String(this._codeValue ?? "");
       if (cur.length >= 6) return;
-      this._codeValue = cur + key.toUpperCase();
+      this._codeValue = cur + key;
       this._refreshCodeField();
     }
   }
