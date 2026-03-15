@@ -14,5 +14,6 @@ new Phaser.Game({
   width: 1600,
   height: 800,
   backgroundColor: "#1d1f27",
+  pixelArt: true,
   scene: [MainMenuScene, MatchmakingScene, InterimScene, GameScene, UIScene],
 });
