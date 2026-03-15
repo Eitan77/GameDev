@@ -1,8 +1,5 @@
-// ============================================================
 // server/src/sim/PlayerSim.js
 // Server-side Planck physics simulation for one player.
-// Handles movement, tilt/jump, arm swing, guns, and auto-aim.
-// ============================================================
 
 import planck from "planck";
 
@@ -92,12 +89,6 @@ const BEAM_DEFAULT_MUZZLE_NORM_Y = 0.5;
 
 const EPSILON = 1e-6;
 
-// Legacy helper kept for any external callers; ground detection now uses _isBlockingFixture().
-function skipRayFixture(tag) {
-  return tag === "playerBody" || tag === "foot" || tag === "arm"
-      || (tag !== "ground" && tag !== "wall");
-}
-
 function clamp(x, min, max) {
   return Math.max(min, Math.min(max, x));
 }
@@ -143,22 +134,18 @@ export default class PlayerSim {
     this.ammo = 0;
 
     this.lastFireSeq = 0;
-
-    // Fire controls (server authoritative)
     this.fireHeld = false;
 
     // Server-side rate limiting / automatic fire timing
     this._simTimeMs = 0;
     this._nextShotMs = 0;
 
-    // ✅ death / ragdoll state
     this.dead = false;
 
     this.touchingGround = false;
     this.groundGraceTimer = 0;
 
-    // Side rays: body resting on a pillar/ledge satisfies auto-balance
-    // but NOT tilt/jump (foot must still be on ground for those).
+    // Side rays: body resting on pillar/ledge satisfies auto-balance but NOT tilt/jump.
     this.touchingAnySurface = false;
     this.sideGroundGraceTimer = 0;
 
@@ -168,12 +155,10 @@ export default class PlayerSim {
     this.holdPastMaxActive = false;
     this.holdPastMaxAngleRad = 0;
 
-    // ✅ movement smoothing
     this.leftCornerGrace = 0;
     this.rightCornerGrace = 0;
 
-    // ✅ short timer after a jump where we suppress in-air auto-balance torque
-    // (removes the "weird rotation" right after jumping)
+    // Suppresses in-air auto-balance torque right after jumping.
     this.justJumpedTimer = 0;
 
     this.isDragging = false;
@@ -197,7 +182,6 @@ export default class PlayerSim {
     return this.dead;
   }
 
-  // ✅ Enter/exit ragdoll
   setDead(wantDead) {
     const w = !!wantDead;
     if (w === this.dead) return;
@@ -205,17 +189,12 @@ export default class PlayerSim {
     this.dead = w;
 
     if (w) {
-      // stop any player-controlled joints
       this.endMouseDrag();
-
-      // drop the weapon on death
       this.dropGun();
-
-      // clear movement state so we don't "snap" on revive
       this._resetTiltState();
       this.justJumpedTimer = 0;
 
-      // give a small topple so it actually falls limp
+      // Give a small topple so it falls limp
       const s = stableSignFromString(this.sessionId);
       this.body.setAwake(true);
       this.body.setAngularVelocity(this.body.getAngularVelocity() + 3.5 * s);
@@ -228,7 +207,7 @@ export default class PlayerSim {
     }
   }
 
-  // ✅ Apply knockback ONLY when dying (called by LobbyRoom on kill)
+  // Apply knockback on kill (called by LobbyRoom)
   applyDeathKnockback(dirX, dirY, strengthPxPerSec, upPxPerSec = 0) {
     if (!this.body) return;
 
@@ -380,27 +359,19 @@ export default class PlayerSim {
     }
   }
 
-  // --------------------------
-  // Respawn (server authoritative)
-  // --------------------------
   respawnAt(xPx, yPx) {
-    // ✅ revive
     this.setDead(false);
 
     const x = Number(xPx) || 0;
     const y = Number(yPx) || 0;
 
     this.endMouseDrag();
-
     this._resetTiltState();
     this.justJumpedTimer = 0;
-
     this.groundGraceTimer = 0;
     this.touchingGround = false;
     this.sideGroundGraceTimer = 0;
     this.touchingAnySurface = false;
-
-    // drop weapon on respawn
     this.dropGun();
 
     this.body.setLinearVelocity(Vec2(0, 0));
@@ -788,7 +759,6 @@ export default class PlayerSim {
     this.groundGraceTimer = 0;
     this.touchingGround = false;
 
-    // ✅ suppress in-air auto-balance torque right after jumping
     this.justJumpedTimer = JUMP_STABILIZE_TIME_SEC;
 
     return true;
@@ -830,12 +800,13 @@ export default class PlayerSim {
     };
   }
 
-  computeGunPosePx() {
+  // cachedArmPose: optional pre-computed result of getArmPosePx() to avoid duplicate call
+  computeGunPosePx(cachedArmPose = null) {
     if (!this.gunId) return null;
-    const def = this.gunCatalog?.[this.gunId];
+    const def = this.gunCatalog[this.gunId];
     if (!def) return null;
 
-    const armPose = this.getArmPosePx();
+    const armPose = cachedArmPose ?? this.getArmPosePx();
     if (!armPose) return null;
 
     const topX = armPose.armX;
@@ -964,7 +935,6 @@ export default class PlayerSim {
     // Fixed-step simulation time (ms), used for fire-rate limiting.
     this._simTimeMs += Math.max(0, Number(fixedDt) || 0) * 1000;
 
-    // ✅ If dead: no movement forces, no tilt/jump, no auto-aim, no firing.
     if (this.dead) {
       this.endMouseDrag();
       this.fireHeld = false;
@@ -998,7 +968,6 @@ export default class PlayerSim {
     else this.sideGroundGraceTimer = Math.max(0, this.sideGroundGraceTimer - fixedDt);
     this.touchingAnySurface = this.sideGroundGraceTimer > 0;
 
-    // ✅ decay jump-stabilize timer
     this.justJumpedTimer = Math.max(0, this.justJumpedTimer - fixedDt);
 
     // dragging disables tilt/balance
@@ -1010,12 +979,8 @@ export default class PlayerSim {
 
     // ------------------------------------------------------------
     // Guns (server authoritative)
-    // - `fireSeq` is a *press* edge (semi-auto behavior)
-    // - `fireHeld` enables continuous fire ONLY for guns with `automatic: true`
-    // - `timeBetweenShots` (ms) rate-limits both modes
-    // ------------------------------------------------------------
-
-    const def = this.gunCatalog?.[this.gunId] || null;
+    // fireSeq = press edge (semi-auto); fireHeld = hold (automatic guns only)
+    const def = this.gunCatalog[this.gunId] || null;
     const timeBetweenShotsMs = Math.max(0, Number(def?.timeBetweenShots ?? 0) || 0);
     const isAutomatic = !!def?.automatic;
 
@@ -1187,10 +1152,7 @@ export default class PlayerSim {
     // Ensure gravity is restored any time we reach this non-tilt path
     this.body.setGravityScale(1);
 
-    // auto-balance when NOT actively tilting
-    // - On ground: full strength
-    // - In air: reduced strength (AIR_BALANCE_MULT)
-    // - Right after jump: suppress in-air balance briefly to avoid weird mid-air spin
+    // Auto-balance when not tilting (reduced in air, suppressed just after jump)
     if (this.prevTiltDir === 0) {
       const targetAngle = 0;
 
@@ -1210,10 +1172,8 @@ export default class PlayerSim {
       }
     }
 
-    // Only update when tilt was applicable this frame.
-    // When !tiltAllowedNow, _resetTiltState() already set prevTiltDir = 0;
-    // overwriting it here would cause landing to look like a mid-tilt continuation,
-    // which skips the "started past max" check and snaps the angle on touchdown.
+    // When !tiltAllowedNow, _resetTiltState() already zeroed prevTiltDir;
+    // overwriting here would cause landing to skip the "started past max" check.
     if (tiltAllowedNow) {
       this.prevTiltDir = tiltDir;
     }
@@ -1221,9 +1181,7 @@ export default class PlayerSim {
     return events;
   }
 
-  // --------------------------
-  // State snapshot for LobbyRoom
-  // --------------------------
+  // State snapshot for LobbyRoom — arm pose computed once and reused for gun pose.
   getStateSnapshot() {
     const bp = this.body.getPosition();
 
@@ -1238,7 +1196,7 @@ export default class PlayerSim {
     const armY = Math.round(armPose?.armY ?? y);
     const armA = armPose?.armA ?? a;
 
-    const gunPose = this.computeGunPosePx();
+    const gunPose = this.computeGunPosePx(armPose);
 
     const gunX = Math.round(gunPose?.gunX ?? 0);
     const gunY = Math.round(gunPose?.gunY ?? 0);

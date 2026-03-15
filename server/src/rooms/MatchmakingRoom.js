@@ -1,15 +1,4 @@
-// ============================================================
-// server/src/rooms/MatchmakingRoom.js
-//
-// One shared queue room.
-// - Players join this first.
-// - Broadcasts "queue" counts so client can show: In que X/N
-// - When N players are waiting, create a NEW "lobby" instance
-//   and send seat reservations to those N players.
-//
-// Match settings:
-//   MATCH_SIZE = 4  (standard 4-player lobbies)
-// =======================================as=====================
+// server/src/rooms/MatchmakingRoom.js — queue room; creates lobby and sends seat reservations
 
 import { Room, matchMaker } from "colyseus";
 

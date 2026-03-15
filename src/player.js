@@ -1,11 +1,5 @@
-// ============================================================
 // src/player.js
-// CLIENT: Render-only player (server authoritative physics).
-//
-// ✅ No interpolation: snap to latest server snapshot.
-// ✅ Death visuals: tint + fade, hide health bar
-// ✅ Local player's health is rendered in UIScene (HUD overlay)
-// ============================================================
+// Client-side render-only player. Snaps to server state — no interpolation.
 
 import Phaser from "phaser";
 import { GUN_CATALOG } from "./gunCatalog.js";
@@ -49,12 +43,7 @@ const HEALTH_BAR_BG_ALPHA = 0.85;
 const HEALTH_BAR_FILL_COLOR = 0x00ff00;
 const HEALTH_BAR_FILL_ALPHA = 0.95;
 
-// ------------------------------------------------------------
-// HUD placement (local player only)  (not used anymore, but safe to keep)
-// ------------------------------------------------------------
-const HUD_MARGIN_X_PX = 24;
-const HUD_MARGIN_Y_PX = 24;
-const HUD_DEPTH = 2001; // above most things (GameScene statusText is 2000)
+const HUD_DEPTH = 2001;
 
 // ------------------------------------------------------------
 // Dead visuals
@@ -87,40 +76,24 @@ export default class Player {
     // skin (cosmetic tint)
     this.skinId = "default";
 
-    // ------------------------
-    // main sprite
-    // ------------------------
     this.sprite = this.scene.add.image(0, 0, "player");
     this.sprite.setDisplaySize(PLAYER_W_PX, PLAYER_H_PX);
     this.sprite.setOrigin(0.5, 0.5);
     this.sprite.setDepth(PLAYER_DEPTH);
 
-    // ------------------------
-    // arm sprite (top anchored)
-    // ------------------------
     this.arm = this.scene.add.image(0, 0, "arm");
     this.arm.setDisplaySize(ARM_W_PX, ARM_H_PX);
     this.arm.setOrigin(0.5, 0.0);
     this.arm.setDepth(ARM_DEPTH);
 
-    // ------------------------
-    // gun
-    // ------------------------
     this.equippedGun = null;
     this.gunSprite = null;
-
     this._gunId = "";
     this._ammo = 0;
 
-    // ------------------------
-    // health
-    // ------------------------
     this.maxHealth = 100;
     this.health = 100;
 
-    // ------------------------
-    // username (rendered above head)
-    // ------------------------
     this.name = "Player";
     this.nameText = this.scene.add
       .text(0, 0, this.name, {
@@ -133,9 +106,6 @@ export default class Player {
       .setOrigin(0.5, 1);
     this.nameText.setDepth(NAME_DEPTH);
 
-    // ------------------------
-    // health bar graphics (same style as before)
-    // ------------------------
     const plate = this.scene.add
       .rectangle(
         0,
@@ -164,11 +134,8 @@ export default class Player {
 
     this.healthBar = this.scene.add.container(0, 0, [plate, bg, this.healthFill]);
 
-    // Local = HUD depth, others = world depth
     this.healthBar.setDepth(this.isLocal ? HUD_DEPTH : 50);
-
-    // Local player health is rendered in the HUD overlay (UIScene), so hide this.
-    if (this.isLocal) this.healthBar.setVisible(false);
+    if (this.isLocal) this.healthBar.setVisible(false); // HUD renders local health
 
     // apply initial visuals
     this.applyDeadVisuals();
@@ -189,9 +156,6 @@ export default class Player {
     this.sprite = null;
   }
 
-  // ------------------------------------------------------------
-  // Dead visuals (tint, alpha, hide health bar)
-  // ------------------------------------------------------------
   applyDeadVisuals() {
     if (!this.sprite || !this.arm) return;
 
@@ -208,11 +172,9 @@ export default class Player {
         this.gunSprite.setAlpha(DEAD_ALPHA);
       }
 
-      // ✅ keep health bar visible even when dead (shows 0)
       if (this.healthBar) this.healthBar.setVisible(!this.isLocal);
       if (this.nameText) this.nameText.setAlpha(DEAD_ALPHA);
     } else {
-      // Restore skin tint (or clear if default)
       this._applySkinTint(this.skinId);
 
       this.sprite.setAlpha(1);
@@ -224,15 +186,10 @@ export default class Player {
       }
 
       if (this.nameText) this.nameText.setAlpha(1);
-
-      // Local player health is rendered in the HUD overlay (UIScene)
       if (this.healthBar) this.healthBar.setVisible(!this.isLocal);
     }
   }
 
-  // ------------------------------------------------------------
-  // Read server schema state into local target
-  // ------------------------------------------------------------
   setTargetFromState(s) {
     const name = typeof s.name === "string" ? s.name : this.name;
     const x = Number(s.x) || 0;
@@ -252,7 +209,6 @@ export default class Player {
     const health = Number(s.health);
     const safeHealth = Number.isFinite(health) ? health : this.health;
 
-    // dead flag from server (fallback: health <= 0)
     const dead = typeof s.dead === "boolean" ? s.dead : safeHealth <= 0;
 
     this.target = {

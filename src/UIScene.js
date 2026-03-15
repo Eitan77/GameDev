@@ -1,23 +1,5 @@
-// ============================================================
-// UIScene.js
-// HUD overlay Scene.
-// - Draws UI in screen-space (no camera jitter, no zoom math).
-// - Health display: bottom-left (IMAGE BAR + 40 MARKERS)
-// - Round timer: top-center (pixel-art digits)
-// - Leaderboard: bottom-right (medal icons + player names)
-//
-// Timer art filenames expected in your client public assets:
-//   assets/images/timer_0.png ... timer_9.png
-//   assets/images/timer_colon.png
-// Keys are loaded as: "timer_0"..."timer_9", "timer_colon"
-//
-// Server timer source (Colyseus state):
-//   room.state.roundTimeLeftSec  (uint16)
-//
-// HEALTH BAR IMAGES expected in your client public assets:
-//   assets/images/New Project (10).png   (blank bar background with heart)
-//   assets/images/New Project (13).png   (10x80 red marker segment)
-// ============================================================
+// src/UIScene.js
+// HUD overlay: health bar (bottom-left), round timer (top-center), leaderboard (bottom-right).
 
 import Phaser from "phaser";
 import { SettingsOverlay } from "./settings.js";
@@ -153,6 +135,7 @@ export default class UIScene extends Phaser.Scene {
     this._onResize = null;
     this._lastW = -1;
     this._lastH = -1;
+    this._lastShownSegments = -1; // dirty check: skip health loop when unchanged
 
     // HUD buttons
     this._leaveBtnBg = null;
@@ -244,6 +227,7 @@ export default class UIScene extends Phaser.Scene {
     this.timerContainer = null;
     this.timerSprites = [];
     this._lastTimerText = "";
+    this._lastShownSegments = -1;
 
     for (const m of this.lbMedals) { try { m.destroy(); } catch (_) {} }
     for (const t of this.lbNameTexts) { try { t.destroy(); } catch (_) {} }
@@ -327,9 +311,6 @@ export default class UIScene extends Phaser.Scene {
     this._settingsOverlay?.open();
   }
 
-  // -----------------------------
-  // Health bar creation (IMAGE + 40 MARKERS)
-  // -----------------------------
   createHealthBar() {
     // Force pixel-art filtering (prevents seams/blur when scaling).
     try {
@@ -386,9 +367,6 @@ export default class UIScene extends Phaser.Scene {
     this.healthBar.setVisible(false);
   }
 
-  // -----------------------------
-  // Timer creation (pixel digits)
-  // -----------------------------
   createTimer() {
     // Default display "02:00" so sprites are created with valid textures.
     const makeDigit = (digitChar) => {
@@ -459,9 +437,6 @@ export default class UIScene extends Phaser.Scene {
     this.timerContainer.y = Math.round(TIMER_TOP_MARGIN_PX + glyphH / 2);
   }
 
-  // -----------------------------
-  // Leaderboard creation
-  // -----------------------------
   createLeaderboard() {
     // Force pixel-art filtering on medal textures
     for (let i = 1; i <= LB_MAX_MEDALS; i++) {
@@ -480,7 +455,6 @@ export default class UIScene extends Phaser.Scene {
     this._lbRowsByPlayer = new Map(); // sid -> { nameText }
   }
 
-  // Route leaderboard updates: hard rebuild when player count changes, animate otherwise.
   _updateLeaderboard(gameScene, w, h) {
     if (!this.lbContainer || !this.lbGraphics) return;
 
@@ -506,7 +480,6 @@ export default class UIScene extends Phaser.Scene {
     }
   }
 
-  // Full destroy-and-recreate of all leaderboard objects.
   _rebuildLeaderboard(ranked, w, h) {
     // Kill any in-progress swap tweens
     for (const row of this._lbRowsByPlayer.values()) {
@@ -592,7 +565,6 @@ export default class UIScene extends Phaser.Scene {
     this.lbContainer.setVisible(true);
   }
 
-  // Slide existing name texts to their new rank positions.
   _animateLeaderboardSwap(ranked) {
     ranked.forEach((entry, i) => {
       const row = this._lbRowsByPlayer.get(entry.sid);
@@ -608,7 +580,6 @@ export default class UIScene extends Phaser.Scene {
     });
   }
 
-  // Position the leaderboard container at the bottom-right corner.
   _layoutLeaderboard(w, h, rowCount) {
     if (!this.lbContainer) return;
     if (rowCount == null) {
@@ -625,10 +596,6 @@ export default class UIScene extends Phaser.Scene {
     this.lbContainer.y = Math.round(h - totalH - LB_MARGIN_BOTTOM_PX);
   }
 
-  // ------------------------------------------------------------
-  // ui(force)
-  // ALL overlay drawing/updates go here.
-  // ------------------------------------------------------------
   ui(force = false) {
     const gameScene = this.scene.get(this.gameSceneKey);
 
@@ -638,15 +605,11 @@ export default class UIScene extends Phaser.Scene {
     const w = Number(this.scale?.width) || 0;
     const h = Number(this.scale?.height) || 0;
 
-    // -------------------------
-    // Health bar (local player)
-    // -------------------------
     if (!localPlayer) {
       if (this.healthBar) this.healthBar.setVisible(false);
+      this._lastShownSegments = -1;
     } else if (this.healthBar && this.healthBg && this.healthMarkers.length === HEALTH_SEG_COUNT) {
-      // Position once when resized
       if (force || w !== this._lastW || h !== this._lastH) {
-        // Use SOURCE size * container scale (container scaling doesn't change child displayWidth).
         const barW = this.healthBg.width * HEALTH_UI_SCALE;
         const barH = this.healthBg.height * HEALTH_UI_SCALE;
 
@@ -668,16 +631,16 @@ export default class UIScene extends Phaser.Scene {
       if (shown < 0) shown = 0;
       if (shown > HEALTH_SEG_COUNT) shown = HEALTH_SEG_COUNT;
 
-      for (let i = 0; i < HEALTH_SEG_COUNT; i++) {
-        this.healthMarkers[i].setVisible(i < shown);
+      if (shown !== this._lastShownSegments) {
+        this._lastShownSegments = shown;
+        for (let i = 0; i < HEALTH_SEG_COUNT; i++) {
+          this.healthMarkers[i].setVisible(i < shown);
+        }
       }
 
       this.healthBar.setVisible(true);
     }
 
-    // -------------------------
-    // Round timer (server authoritative)
-    // -------------------------
     let secLeft = Number(room?.state?.roundTimeLeftSec);
     if (!Number.isFinite(secLeft)) secLeft = 120; // fallback while state connects
 
@@ -689,17 +652,10 @@ export default class UIScene extends Phaser.Scene {
     const txt = `${pad2(minutes)}:${pad2(seconds)}`;
     const changed = this.setTimerText(txt);
 
-    // Layout timer when:
-    // - forced (resize)
-    // - the text changed (digit art may have different widths)
-    // - first run (container y still 0)
     if (force || changed || (this.timerContainer && this.timerContainer.y === 0)) {
       this.layoutTimer(w);
     }
 
-    // -------------------------
-    // Leaderboard (bottom-right)
-    // -------------------------
     this._updateLeaderboard(gameScene, w, h);
 
     if (force) {

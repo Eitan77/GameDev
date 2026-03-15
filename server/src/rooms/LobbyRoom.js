@@ -1,14 +1,5 @@
-// LobbyRoom.js
-// ============================================================
 // server/src/rooms/LobbyRoom.js
-// Server-authoritative physics + collisions + guns.
-//
-// FIXES INCLUDED:
-// ✅ Death zones restored (supports KillZones OR DeathZones; any rectangle kills unless Kills=false)
-// ✅ Gunshot sounds restored (server broadcasts "sound" when it sees a "shot")
-// ✅ Bullet tracers restored (still broadcasts "shot")
-// ✅ Server-authoritative 2:00 round timer in state.roundTimeLeftSec
-// ============================================================
+// Server-authoritative game room: physics, collisions, guns, round timer.
 
 import { Room } from "colyseus";
 import planck from "planck";
@@ -195,11 +186,6 @@ export default class LobbyRoom extends Room {
   onCreate() {
     this.setState(new LobbyState());
 
-    // ------------------------------------------------------------
-    // Round timer (server authoritative)
-    // - Starts when the FIRST player joins
-    // - Clients read: state.roundTimeLeftSec
-    // ------------------------------------------------------------
     this._roundStarted = false;
     this._roundEndMs = 0;
     this.state.roundDurationSec = ROUND_DURATION_SEC;
@@ -223,11 +209,7 @@ export default class LobbyRoom extends Room {
 
     this.mapJson = loaded.mapJson;
 
-    // ------------------------------------------------------------
-    // Death/Kill zones (Tiled object layers)
-    // Supports layer names: KillZones OR DeathZones (plus a couple variants).
-    // Any rectangle in that layer kills, unless it has property Kills=false.
-    // ------------------------------------------------------------
+    // Kill zones: any rect kills unless property Kills=false
     this.killZoneRects = [];
     if (this.mapJson) {
       const killLayerNames = ["KillZones", "DeathZones", "DeathZone", "KillZone"];
@@ -248,10 +230,6 @@ export default class LobbyRoom extends Room {
       }
     }
 
-    // ------------------------------------------------------------
-    // Finish Line zones (Tiled object layer "FinishLine")
-    // Any object with property FinishLine=true ends the round.
-    // ------------------------------------------------------------
     this.finishLineRects = [];
     this._finishLineTriggered = false;
     if (this.mapJson) {
@@ -271,9 +249,6 @@ export default class LobbyRoom extends Room {
       }
     }
 
-    // ------------------------------------------------------------
-    // Checkpoints: read from Tiled object layers
-    // ------------------------------------------------------------
     this.checkpointSpawnsByBaseId = new Map(); // baseId -> {x,y}
     this.checkpointTriggers = []; // [{ baseId, x,y,w,h }]
 
@@ -327,9 +302,6 @@ export default class LobbyRoom extends Room {
       }
     }
 
-    // ------------------------------------------------------------
-    // Sniper powerup spawns (Tiled object layer)
-    // ------------------------------------------------------------
     const sniperSpawnPts = [];
 
     if (this.mapJson) {
@@ -388,6 +360,7 @@ export default class LobbyRoom extends Room {
     this.playerInputs = new Map();
     this.powerUpRespawnTimers = new Map();
     this.deathRespawnTimers = new Map();
+    this._emptyInput = {}; // reused when no input received for a player
 
     this.onMessage("input", (client, msg) => {
       const raw = msg || {};
@@ -684,11 +657,6 @@ export default class LobbyRoom extends Room {
     }
   }
 
-  // ------------------------------------------------------------
-  // Award 1 point to the winner and broadcast round-over.
-  // Server resets the round after a short delay so clients have
-  // time to transition to InterimScene and back.
-  // ------------------------------------------------------------
   triggerRoundOver(winnerId) {
     if (this._finishLineTriggered) return;
     this._finishLineTriggered = true;
@@ -725,37 +693,27 @@ export default class LobbyRoom extends Room {
     }, 1000);
   }
 
-  // ------------------------------------------------------------
-  // Reset round: respawn all players, restore power-ups, restart timer.
-  // Points are intentionally NOT reset (they persist across rounds).
-  // ------------------------------------------------------------
+  // Points persist across rounds; checkpoint progress resets.
   resetRound() {
     this._finishLineTriggered = false;
 
-    // Cancel all pending power-up respawn timers
     for (const [puId, t] of this.powerUpRespawnTimers.entries()) {
       clearTimeout(t);
       this.powerUpRespawnTimers.delete(puId);
     }
 
-    // Re-activate all power-ups at their current positions
     for (const [puId, pu] of this.state.powerUps.entries()) {
       pu.active = true;
-      // Keep whichever gun type was last assigned (gunCycleIndices are unchanged)
     }
 
-    // Respawn every player at the default spawn point, drop their gun
     const { x: spawnX, y: spawnY } = this.getDefaultSpawnPoint();
 
     for (const [sid, sim] of this.playerSims.entries()) {
       const st = this.state.players.get(sid);
       if (!st) continue;
 
-      // Cancel any pending death-respawn timer
       clearTimerFromMap(this.deathRespawnTimers, sid);
-
-      // Drop gun and teleport back to start
-      if (typeof sim.dropGun === "function") sim.dropGun();
+      sim.dropGun();
       sim.respawnAt(spawnX, spawnY);
 
       st.health = st.maxHealth;
@@ -763,7 +721,6 @@ export default class LobbyRoom extends Room {
       st.gunId = "";
       st.ammo = 0;
 
-      // Reset checkpoint progress for this round
       const baseId = String(this.defaultRespawn?.baseId || "");
       if (baseId) this.playerCheckpointBaseId.set(sid, baseId);
       this.playerRespawnBySid.set(sid, { x: spawnX, y: spawnY });
@@ -817,17 +774,16 @@ export default class LobbyRoom extends Room {
   }
 
   fixedStep() {
-    // 1) apply inputs, partition events by kind
     const damageEvents = [];
     const shotEvents = [];
     const soundEvents = [];
     const soundDelayedEvents = [];
 
     for (const [sid, sim] of this.playerSims.entries()) {
-      const input = this.playerInputs.get(sid) || {};
+      const input = this.playerInputs.get(sid) || this._emptyInput;
 
-      // Capture gun BEFORE input is applied (applyInput may drop the gun on last shot).
-      const gunIdBefore = String(sim?.gunId || "");
+      // Capture gun BEFORE input (applyInput may drop it on last shot).
+      const gunIdBefore = sim.gunId || "";
       const defBefore = gunIdBefore ? GUN_CATALOG[gunIdBefore] : null;
 
       const ev = sim.applyInput(input, FIXED_DT);
@@ -839,7 +795,6 @@ export default class LobbyRoom extends Room {
         else if (e.kind === "shot") { shotEvents.push(e); firedThisStep = true; }
       }
 
-      // ✅ Gunshot audio restored (server authoritative)
       if (firedThisStep && defBefore && defBefore.fireSoundKey) {
         soundEvents.push({
           kind: "sound",
@@ -861,16 +816,10 @@ export default class LobbyRoom extends Room {
       }
     }
 
-    // 2) physics step
     this.world.step(FIXED_DT);
-
-    // 2.25) kill zones
     this.updateKillZones();
-
-    // 2.30) finish line check
     this.updateFinishLine();
 
-    // 2.5) apply damage events
     for (const e of damageEvents) {
       const to = String(e.to || "");
       if (!to) continue;
@@ -889,17 +838,17 @@ export default class LobbyRoom extends Room {
       }
     }
 
-    // 2.75) checkpoints
     this.updatePlayerCheckpoints();
 
     // 3) pickups
     for (const sim of this.playerSims.values()) {
-      if (typeof sim.isDead === "function" && sim.isDead()) continue;
+      if (sim.isDead()) continue;
       if (sim.hasGun()) continue;
 
-      const snap = sim.getStateSnapshot();
-      const px = snap.x;
-      const py = snap.y;
+      // Use body position directly — avoids a full getStateSnapshot() allocation.
+      const bp = sim.body.getPosition();
+      const px = bp.x * PPM;
+      const py = bp.y * PPM;
 
       for (const [puId, pu] of this.state.powerUps.entries()) {
         if (!pu.active) continue;
@@ -937,7 +886,7 @@ export default class LobbyRoom extends Room {
       }
     }
 
-    // 4) push snapshots to state
+    // Push physics pose to state (health is managed separately by damage/respawn logic)
     for (const [sid, sim] of this.playerSims.entries()) {
       const st = this.state.players.get(sid);
       if (!st) continue;
@@ -947,31 +896,18 @@ export default class LobbyRoom extends Room {
       st.x = s.x;
       st.y = s.y;
       st.a = s.a;
-
       st.armX = s.armX;
       st.armY = s.armY;
       st.armA = s.armA;
-
       st.dir = s.dir;
-
       st.gunId = s.gunId;
       st.ammo = s.ammo;
-
-      // ✅ Health is server authoritative.
-      // It is updated in this.fixedStep() via damage + respawn logic.
-      // Do NOT overwrite it from PlayerSim.getStateSnapshot(), which is only
-      // for physics/pose (and may not track health).
-
-      // dead/ragdoll flag authoritative
       st.dead = s.dead;
-
-      // optional debug
       st.gunX = s.gunX;
       st.gunY = s.gunY;
       st.gunA = s.gunA;
     }
 
-    // 5) broadcast events (single pass now)
     for (const e of shotEvents) {
       this.broadcast("shot", e);
     }

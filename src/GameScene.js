@@ -1,19 +1,4 @@
-// GameScene.js
-// ============================================================
-// GameScene.js
-// CLIENT: render-only.
-// - Server runs physics/collisions.
-// - Client renders sprites, VFX, and plays audio.
-// - Client sends compact inputs.
-//
-// ✅ Adds checkpoint markers (no collision) at Tiled "PlayerSpawnPoints"
-//    using image: assets/images/checkpoint.png (key: "checkpoint")
-//
-// ✅ Now starts from MatchmakingScene with a seat reservation:
-//    this.scene.start("GameScene", { reservation, client })
-//
-// ✅ Launches UIScene (HUD overlay) for health + timer
-// ============================================================
+// src/GameScene.js — render-only client scene
 
 import Phaser from "phaser";
 import { Client } from "@colyseus/sdk";
@@ -455,10 +440,7 @@ export default class GameScene extends Phaser.Scene {
         this._removeCoverOverlay(() => this.ensureUIScene());
       }
 
-      const playerRefresh = (changes) => {
-        if (typeof p.applyStateChanges === "function") p.applyStateChanges(changes, playerState);
-        else p.setTargetFromState(playerState);
-      };
+      const playerRefresh = () => p.setTargetFromState(playerState);
 
       registerStatePropertyListeners(
         this.callbacks,

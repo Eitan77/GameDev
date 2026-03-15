@@ -1,19 +1,4 @@
-// ============================================================
-// server/src/rooms/GameRoom.js
-// Extends LobbyRoom with:
-//   - maxClients = 4 per match
-//   - Server-driven interim gate: all clients transition
-//     to/from InterimScene simultaneously via "interimEnd".
-//
-// Gate logic:
-//   1. Server calls _startInterim() when the round transitions.
-//   2. Clients send "interimReady" when InterimScene assets are loaded.
-//   3. Server broadcasts "interimEnd" once:
-//        - every connected client has signalled ready, AND
-//        - INTERIM_MIN_MS has elapsed (minimum display time).
-//   4. Safety: after INTERIM_FORCE_MS, proceeds even if someone
-//        never signals (handles disconnects / background-throttled tabs).
-// ============================================================
+// server/src/rooms/GameRoom.js — extends LobbyRoom with synchronized interim gate
 
 import LobbyRoom from "./LobbyRoom.js";
 
