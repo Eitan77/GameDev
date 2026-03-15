@@ -20,6 +20,7 @@
 // ============================================================
 
 import Phaser from "phaser";
+import { SettingsOverlay } from "./settings.js";
 
 // ------------------------------
 // Health bar images
@@ -100,6 +101,19 @@ const LB_DEPTH = 100;
 // Duration (ms) of the rank-swap slide animation for name texts.
 const LB_SWAP_DURATION_MS = 280;
 
+// ------------------------------
+// HUD action buttons (top-left)
+// ------------------------------
+const HUD_BTN_SIZE = 40;
+const HUD_BTN_MARGIN = 16;
+const HUD_BTN_GAP = 10;
+const HUD_BTN_COLOR = 0x1a1f2e;
+const HUD_BTN_HOVER = 0x2d3342;
+const HUD_BTN_ALPHA = 0.85;
+const HUD_BTN_STROKE = 0x3a4260;
+const HUD_BTN_FONT = { fontFamily: "Arial, sans-serif", fontSize: "20px", color: "#ffffff" };
+const HUD_BTN_DEPTH = 110;
+
 function clamp01(x) {
   if (x <= 0) return 0;
   if (x >= 1) return 1;
@@ -139,6 +153,13 @@ export default class UIScene extends Phaser.Scene {
     this._onResize = null;
     this._lastW = -1;
     this._lastH = -1;
+
+    // HUD buttons
+    this._leaveBtnBg = null;
+    this._leaveBtnIcon = null;
+    this._settingsBtnBg = null;
+    this._settingsBtnIcon = null;
+    this._settingsOverlay = null;
   }
 
   init(data) {
@@ -190,6 +211,7 @@ export default class UIScene extends Phaser.Scene {
     this.createHealthBar();
     this.createTimer();
     this.createLeaderboard();
+    this._createHudButtons();
 
     // Initial layout
     this.ui(true);
@@ -233,6 +255,76 @@ export default class UIScene extends Phaser.Scene {
     this.lbMedals = [];
     this.lbNameTexts = [];
     this._lastRankedHash = "";
+
+    try { this._settingsOverlay?.destroy(); } catch (_) {}
+    this._settingsOverlay = null;
+    try { this._leaveBtnBg?.destroy(); } catch (_) {}
+    try { this._leaveBtnIcon?.destroy(); } catch (_) {}
+    try { this._settingsBtnBg?.destroy(); } catch (_) {}
+    try { this._settingsBtnIcon?.destroy(); } catch (_) {}
+    this._leaveBtnBg = null;
+    this._leaveBtnIcon = null;
+    this._settingsBtnBg = null;
+    this._settingsBtnIcon = null;
+  }
+
+  // -----------------------------
+  // HUD action buttons (top-left): Leave + Settings
+  // -----------------------------
+  _createHudButtons() {
+    const x1 = HUD_BTN_MARGIN + HUD_BTN_SIZE / 2;
+    const y = HUD_BTN_MARGIN + HUD_BTN_SIZE / 2;
+    const x2 = x1 + HUD_BTN_SIZE + HUD_BTN_GAP;
+
+    // ---- Leave button ----
+    this._leaveBtnBg = this.add.rectangle(x1, y, HUD_BTN_SIZE, HUD_BTN_SIZE, HUD_BTN_COLOR, HUD_BTN_ALPHA)
+      .setStrokeStyle(2, HUD_BTN_STROKE, 1)
+      .setDepth(HUD_BTN_DEPTH)
+      .setInteractive({ useHandCursor: true });
+    this._leaveBtnIcon = this.add.text(x1, y, "\u2190", HUD_BTN_FONT)
+      .setOrigin(0.5).setDepth(HUD_BTN_DEPTH + 1);
+
+    this._leaveBtnBg.on("pointerover", () => this._leaveBtnBg.setFillStyle(HUD_BTN_HOVER, 1));
+    this._leaveBtnBg.on("pointerout", () => this._leaveBtnBg.setFillStyle(HUD_BTN_COLOR, HUD_BTN_ALPHA));
+    this._leaveBtnBg.on("pointerdown", () => this._leaveGame());
+
+    // ---- Settings button ----
+    this._settingsBtnBg = this.add.rectangle(x2, y, HUD_BTN_SIZE, HUD_BTN_SIZE, HUD_BTN_COLOR, HUD_BTN_ALPHA)
+      .setStrokeStyle(2, HUD_BTN_STROKE, 1)
+      .setDepth(HUD_BTN_DEPTH)
+      .setInteractive({ useHandCursor: true });
+    this._settingsBtnIcon = this.add.text(x2, y, "\u2699", HUD_BTN_FONT)
+      .setOrigin(0.5).setDepth(HUD_BTN_DEPTH + 1);
+
+    this._settingsBtnBg.on("pointerover", () => this._settingsBtnBg.setFillStyle(HUD_BTN_HOVER, 1));
+    this._settingsBtnBg.on("pointerout", () => this._settingsBtnBg.setFillStyle(HUD_BTN_COLOR, HUD_BTN_ALPHA));
+    this._settingsBtnBg.on("pointerdown", () => this._openSettings());
+
+    // Settings overlay instance
+    this._settingsOverlay = new SettingsOverlay(this);
+    this._settingsOverlay.onClose = (settings) => {
+      const gameScene = this.scene.get(this.gameSceneKey);
+      // Apply volume to the game scene's sound manager
+      if (gameScene?.sound) gameScene.sound.volume = settings.volume;
+      // Send tilt sensitivity to server
+      try { gameScene?.room?.send("settings", { tiltSensitivity: settings.tiltSensitivity }); } catch (_) {}
+    };
+  }
+
+  _leaveGame() {
+    const gameScene = this.scene.get(this.gameSceneKey);
+    const username = gameScene?._username || "Player";
+    const skinId = gameScene?._skinId || "default";
+
+    try { gameScene?.room?.leave(); } catch (_) {}
+    this.scene.stop("UIScene");
+    this.scene.stop(this.gameSceneKey);
+    this.scene.start("MainMenuScene", { username, skinId });
+  }
+
+  _openSettings() {
+    if (this._settingsOverlay?.isOpen) return;
+    this._settingsOverlay?.open();
   }
 
   // -----------------------------

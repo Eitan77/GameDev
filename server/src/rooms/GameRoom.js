@@ -68,6 +68,13 @@ export default class GameRoom extends LobbyRoom {
       }
     });
 
+    this.onMessage("settings", (client, msg) => {
+      const sim = this.playerSims?.get(client.sessionId);
+      if (!sim) return;
+      const ts = Number(msg?.tiltSensitivity);
+      if (Number.isFinite(ts)) sim.tiltSensitivity = Math.max(0, Math.min(1, ts));
+    });
+
     this.onMessage("setSkin", (client, msg) => {
       const st = this.state?.players?.get(client.sessionId);
       if (!st) return;

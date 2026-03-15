@@ -24,6 +24,7 @@ import Player from "./player.js";
 import GunPowerUp from "./GunPowerUp.js";
 import { preloadGuns } from "./gunCatalog.js";
 import VisibilityManager from "./VisibilityManager.js";
+import { loadSettings } from "./settings.js";
 
 // connects to same host (works on LAN)
 const COLYSEUS_URL = `${window.location.protocol}//${window.location.hostname}:2567`;
@@ -343,6 +344,10 @@ export default class GameScene extends Phaser.Scene {
     // Prevent audio/event catch-up when the tab is restored from background.
     this.visibility = new VisibilityManager(this);
 
+    // Apply user volume setting
+    const settings = loadSettings();
+    this.sound.volume = settings.volume;
+
     this.map = new GameMap(this).create();
 
     // Covers the world while we wait for the local player + camera to settle.
@@ -393,6 +398,12 @@ export default class GameScene extends Phaser.Scene {
       // Safe even if server hasn't implemented it yet (it will just ignore it).
       try {
         this.room.send("setName", { name: this._username, skinId: this._skinId });
+      } catch (_) {}
+
+      // Send tilt sensitivity setting to server
+      try {
+        const s = loadSettings();
+        this.room.send("settings", { tiltSensitivity: s.tiltSensitivity });
       } catch (_) {}
 
       this.registerCleanup();

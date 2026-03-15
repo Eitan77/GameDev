@@ -136,6 +136,9 @@ export default class PlayerSim {
     this.facingDir = +1;
     this.prevFacingDir = this.facingDir;
 
+    // Per-player tilt speed multiplier (0–1, default 0.5 maps to 1x)
+    this.tiltSensitivity = 0.5;
+
     this.gunId = "";
     this.ammo = 0;
 
@@ -1150,9 +1153,12 @@ export default class PlayerSim {
       const rightGrounded = this.rightCornerGrace > 0;
 
       // Compute the desired angle this tick
+      // tiltSensitivity 0→0.5x, 0.5→1x, 1→2x speed
+      const tiltSpeedMult = 0.5 + this.tiltSensitivity * 1.5;
+      const tiltSpeed = TILT_ROTATE_SPEED_RAD_PER_SEC * tiltSpeedMult;
       const wantAngle = clamp(tiltDir * TILT_MAX_ANGLE_RAD, -TILT_MAX_ANGLE_RAD, +TILT_MAX_ANGLE_RAD);
       const diff = wrapRadPi(wantAngle - angleNow);
-      let step = clamp(diff, -TILT_ROTATE_SPEED_RAD_PER_SEC * fixedDt, +TILT_ROTATE_SPEED_RAD_PER_SEC * fixedDt);
+      let step = clamp(diff, -tiltSpeed * fixedDt, +tiltSpeed * fixedDt);
       let angleTarget = wrapRadPi(angleNow + step);
 
       // Clamp to max and latch the hold flag when we reach it

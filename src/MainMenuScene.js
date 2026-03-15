@@ -1,6 +1,7 @@
 import Phaser from "phaser";
 import { Client } from "@colyseus/sdk";
 import { SKIN_CATALOG, SKIN_IDS, loadSkinId, saveSkinId } from "./skinCatalog.js";
+import { SettingsOverlay } from "./settings.js";
 
 // ============================================================
 // MainMenuScene
@@ -129,6 +130,14 @@ const LOCKER_EQUIP_W      = 160;
 const LOCKER_EQUIP_H      = 44;
 const LOCKER_HIGHLIGHT     = 0xd0aaff;
 
+// ---- Settings button (top-right) ----
+const SETTINGS_BTN_SIZE = 44;
+const SETTINGS_BTN_MARGIN = 18;
+const SETTINGS_BTN_COLOR = 0x1a1f2e;
+const SETTINGS_BTN_HOVER = 0x2d3342;
+const SETTINGS_BTN_STROKE = 0x3a4260;
+const SETTINGS_BTN_FONT = { fontFamily: "Arial, sans-serif", fontSize: "22px", color: "#ffffff" };
+
 // ============================================================
 
 export default class MainMenuScene extends Phaser.Scene {
@@ -200,6 +209,11 @@ export default class MainMenuScene extends Phaser.Scene {
     this._lockerContainer = null;
     this._lockerOpen = false;
     this._selectedSkinId = "default";
+
+    // Settings
+    this._settingsBtnBg = null;
+    this._settingsBtnIcon = null;
+    this._settingsOverlay = null;
   }
 
   preload() {
@@ -343,6 +357,20 @@ export default class MainMenuScene extends Phaser.Scene {
     this._skinsBtnBg.on("pointerdown", () => {
       if (this._starting || this._lockerOpen) return;
       this._openLocker();
+    });
+
+    // ---- Settings button (top-right) ----
+    this._settingsBtnBg = this.add.rectangle(0, 0, SETTINGS_BTN_SIZE, SETTINGS_BTN_SIZE, SETTINGS_BTN_COLOR, 0.85)
+      .setStrokeStyle(2, SETTINGS_BTN_STROKE, 1)
+      .setInteractive({ useHandCursor: true });
+    this._settingsBtnIcon = this.add.text(0, 0, "\u2699", SETTINGS_BTN_FONT).setOrigin(0.5);
+
+    this._settingsBtnBg.on("pointerover", () => this._settingsBtnBg.setFillStyle(SETTINGS_BTN_HOVER, 1));
+    this._settingsBtnBg.on("pointerout", () => this._settingsBtnBg.setFillStyle(SETTINGS_BTN_COLOR, 0.85));
+    this._settingsBtnBg.on("pointerdown", () => {
+      if (this._settingsOverlay?.isOpen) return;
+      if (!this._settingsOverlay) this._settingsOverlay = new SettingsOverlay(this);
+      this._settingsOverlay.open();
     });
 
     // ---- Status text ----
@@ -597,6 +625,12 @@ export default class MainMenuScene extends Phaser.Scene {
 
     this._leaveBtnBg?.setPosition(codeAreaX + LEAVE_BTN_OFFSET_X, codeAreaY + LEAVE_BTN_OFFSET_Y);
     this._leaveBtnText?.setPosition(codeAreaX + LEAVE_BTN_OFFSET_X, codeAreaY + LEAVE_BTN_OFFSET_Y);
+
+    // ---- Settings button (top-right) ----
+    const settingsX = w - SETTINGS_BTN_MARGIN - SETTINGS_BTN_SIZE / 2;
+    const settingsY = SETTINGS_BTN_MARGIN + SETTINGS_BTN_SIZE / 2;
+    this._settingsBtnBg?.setPosition(settingsX, settingsY);
+    this._settingsBtnIcon?.setPosition(settingsX, settingsY);
   }
 
   // ============================================================
@@ -1146,6 +1180,10 @@ export default class MainMenuScene extends Phaser.Scene {
 
     // Close locker if open
     this._closeLocker();
+
+    // Settings overlay
+    try { this._settingsOverlay?.destroy(); } catch (_) {}
+    this._settingsOverlay = null;
 
     // Leave party room if we didn't hand off to a game
     if (!this._handedOff) {
