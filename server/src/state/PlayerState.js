@@ -32,6 +32,9 @@ export default class PlayerState extends Schema {
     // ✅ checkpoint progress (leaderboard ranking, reset each round)
     this.cpOrder = 0;
 
+    // skin (cosmetic tint, synced to all clients)
+    this.skinId = "default";
+
     // optional debug
     this.gunX = 0;
     this.gunY = 0;
@@ -63,6 +66,8 @@ defineTypes(PlayerState, {
   points: "uint16",
 
   cpOrder: "uint16",
+
+  skinId: "string",
 
   gunX: "int32",
   gunY: "int32",

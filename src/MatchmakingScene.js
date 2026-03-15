@@ -47,6 +47,7 @@ export default class MatchmakingScene extends Phaser.Scene {
       .replace(/\s+/g, " ")
       .slice(0, 12);
     this.username = name || "Player";
+    this.skinId = data?.skinId || "default";
   }
 
   create() {
@@ -246,9 +247,9 @@ export default class MatchmakingScene extends Phaser.Scene {
       try {
         gameRoom = await this.client.consumeSeatReservation(reservation);
 
-        // Send the name ASAP so other players see it even if this tab hasn't rendered yet.
+        // Send the name + skin ASAP so other players see it even if this tab hasn't rendered yet.
         try {
-          gameRoom.send("setName", { name: this.username });
+          gameRoom.send("setName", { name: this.username, skinId: this.skinId });
         } catch (_) {}
       } catch (err) {
         console.error("Failed to consume seat reservation:", err);
@@ -278,6 +279,7 @@ export default class MatchmakingScene extends Phaser.Scene {
         client:      this.client,
         username:    this.username,
         playerCount: this._queueCount,
+        skinId:      this.skinId,
       });
     });
   }

@@ -9,6 +9,7 @@
 
 import Phaser from "phaser";
 import { GUN_CATALOG } from "./gunCatalog.js";
+import { SKIN_CATALOG } from "./skinCatalog.js";
 
 const PLAYER_ART_FACES_RIGHT = true;
 
@@ -82,6 +83,9 @@ export default class Player {
 
     // death flag (client-side view)
     this.isDead = false;
+
+    // skin (cosmetic tint)
+    this.skinId = "default";
 
     // ------------------------
     // main sprite
@@ -192,8 +196,9 @@ export default class Player {
     if (!this.sprite || !this.arm) return;
 
     if (this.isDead) {
-      this.sprite.setTint(DEAD_TINT);
-      this.arm.setTint(DEAD_TINT);
+      const tint = this._getDeadSkinTint();
+      this.sprite.setTint(tint);
+      this.arm.setTint(tint);
 
       this.sprite.setAlpha(DEAD_ALPHA);
       this.arm.setAlpha(DEAD_ALPHA);
@@ -207,8 +212,8 @@ export default class Player {
       if (this.healthBar) this.healthBar.setVisible(!this.isLocal);
       if (this.nameText) this.nameText.setAlpha(DEAD_ALPHA);
     } else {
-      this.sprite.clearTint();
-      this.arm.clearTint();
+      // Restore skin tint (or clear if default)
+      this._applySkinTint(this.skinId);
 
       this.sprite.setAlpha(1);
       this.arm.setAlpha(1);
@@ -283,6 +288,12 @@ export default class Player {
       this.setGunById(gunId);
     } else {
       this._ammo = ammo;
+    }
+
+    // skin tint
+    const skinId = typeof s.skinId === "string" ? s.skinId : this.skinId;
+    if (skinId !== this.skinId) {
+      this._applySkinTint(skinId);
     }
 
     this.applyDeadVisuals();
@@ -364,6 +375,43 @@ export default class Player {
 
     const angOff = this.equippedGun.heldAngleOffsetRad ?? 0;
     this.gunSprite.rotation = a + angOff * mirrorDir;
+  }
+
+  // ------------------------------------------------------------
+  // Skin tint (cosmetic color from skin catalog)
+  // ------------------------------------------------------------
+  // Combine skin tint with dead gray so the ragdoll keeps the skin color
+  _getDeadSkinTint() {
+    const def = SKIN_CATALOG[this.skinId];
+    const skinTint = def?.tint ?? null;
+    if (!skinTint) return DEAD_TINT;
+    // Multiply each channel: (skinChannel * deadChannel) / 255
+    const sr = (skinTint >> 16) & 0xff;
+    const sg = (skinTint >> 8) & 0xff;
+    const sb = skinTint & 0xff;
+    const dr = (DEAD_TINT >> 16) & 0xff;
+    const dg = (DEAD_TINT >> 8) & 0xff;
+    const db = DEAD_TINT & 0xff;
+    const r = (sr * dr / 255) | 0;
+    const g = (sg * dg / 255) | 0;
+    const b = (sb * db / 255) | 0;
+    return (r << 16) | (g << 8) | b;
+  }
+
+  _applySkinTint(skinId) {
+    this.skinId = skinId || "default";
+    const def = SKIN_CATALOG[this.skinId];
+    const tint = def?.tint ?? null;
+    if (!this.sprite || !this.arm) return;
+    // Don't override dead tint
+    if (this.isDead) return;
+    if (tint) {
+      this.sprite.setTint(tint);
+      this.arm.setTint(tint);
+    } else {
+      this.sprite.clearTint();
+      this.arm.clearTint();
+    }
   }
 
   // ------------------------------------------------------------

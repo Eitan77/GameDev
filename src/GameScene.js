@@ -256,6 +256,7 @@ export default class GameScene extends Phaser.Scene {
       .replace(/\s+/g, " ")
       .slice(0, 16);
     this._username = name || "Player";
+    this._skinId = data?.skinId || "default";
     this._cleanupRegistered = false;
   }
 
@@ -391,7 +392,7 @@ export default class GameScene extends Phaser.Scene {
       // Tell the server our username (server will store it in PlayerState.name)
       // Safe even if server hasn't implemented it yet (it will just ignore it).
       try {
-        this.room.send("setName", { name: this._username });
+        this.room.send("setName", { name: this._username, skinId: this._skinId });
       } catch (_) {}
 
       this.registerCleanup();
@@ -469,6 +470,7 @@ export default class GameScene extends Phaser.Scene {
           "gunX",
           "gunY",
           "gunA",
+          "skinId",
         ]
       );
 
@@ -589,6 +591,7 @@ export default class GameScene extends Phaser.Scene {
         scores,
         winnerName,
         isRoundOver: true,
+        skinId: this._skinId,
       });
     });
 

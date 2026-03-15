@@ -60,6 +60,21 @@ export default class GameRoom extends LobbyRoom {
       let   name = String(raw ?? "").trim().replace(/\s+/g, " ").slice(0, 16);
       if (!name) name = "Player";
       st.name = name;
+      // Also accept skinId in the same message
+      if (msg?.skinId) {
+        let skinId = String(msg.skinId).trim().slice(0, 32);
+        if (!skinId) skinId = "default";
+        st.skinId = skinId;
+      }
+    });
+
+    this.onMessage("setSkin", (client, msg) => {
+      const st = this.state?.players?.get(client.sessionId);
+      if (!st) return;
+      const raw = typeof msg === "string" ? msg : msg?.skinId;
+      let skinId = String(raw ?? "").trim().slice(0, 32);
+      if (!skinId) skinId = "default";
+      st.skinId = skinId;
     });
 
     // Client signals: "I am in InterimScene and my assets are loaded."
@@ -236,7 +251,7 @@ export default class GameRoom extends LobbyRoom {
 
     const scores = [];
     this.state.players.forEach((st, sid) => {
-      scores.push({ sid, name: st.name || "Player", points: Number(st.points) || 0 });
+      scores.push({ sid, name: st.name || "Player", points: Number(st.points) || 0, skinId: st.skinId || "default" });
     });
 
     const winnerName = winnerState?.name || "Player";

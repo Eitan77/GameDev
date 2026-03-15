@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 import { Client } from "@colyseus/sdk";
+import { SKIN_CATALOG, SKIN_IDS, loadSkinId, saveSkinId } from "./skinCatalog.js";
 
 // ============================================================
 // MainMenuScene
@@ -105,6 +106,29 @@ const LEAVE_BG_HOVER      = 0x4a2020;
 const LEAVE_STROKE_COLOR  = 0x8b0000;
 const LEAVE_TEXT_COLOR     = "#ff6666";
 
+// ---- SKINS button ----
+const SKINS_BTN_W         = 200;
+const SKINS_BTN_H         = 50;
+const SKINS_BTN_OFFSET_Y  = 310;          // relative to center Y
+const SKINS_BG_COLOR      = 0x2e1a4a;
+const SKINS_BG_HOVER      = 0x4a2a6a;
+const SKINS_TEXT_COLOR     = "#d0aaff";
+const SKINS_FONT_SIZE     = "28px";
+
+// ---- Locker panel ----
+const LOCKER_PANEL_W      = 900;
+const LOCKER_PANEL_H      = 520;
+const LOCKER_BG_COLOR     = 0x15152a;
+const LOCKER_GRID_COLS    = 5;
+const LOCKER_CARD_W       = 140;
+const LOCKER_CARD_H       = 170;
+const LOCKER_CARD_GAP     = 16;
+const LOCKER_TITLE_SIZE   = "32px";
+const LOCKER_NAME_SIZE    = "14px";
+const LOCKER_EQUIP_W      = 160;
+const LOCKER_EQUIP_H      = 44;
+const LOCKER_HIGHLIGHT     = 0xd0aaff;
+
 // ============================================================
 
 export default class MainMenuScene extends Phaser.Scene {
@@ -168,6 +192,14 @@ export default class MainMenuScene extends Phaser.Scene {
     // Leave party button
     this._leaveBtnBg = null;
     this._leaveBtnText = null;
+
+    // Skin locker
+    this._skinId = "default";
+    this._skinsBtnBg = null;
+    this._skinsBtnText = null;
+    this._lockerContainer = null;
+    this._lockerOpen = false;
+    this._selectedSkinId = "default";
   }
 
   preload() {
@@ -282,6 +314,35 @@ export default class MainMenuScene extends Phaser.Scene {
     this._customBtnBg.on("pointerdown", () => {
       if (this._starting) return;
       this._startCustomGame();
+    });
+
+    // ---- SKINS button ----
+    this._skinId = loadSkinId();
+    this._selectedSkinId = this._skinId;
+
+    this._skinsBtnBg = this.add.rectangle(0, 0, SKINS_BTN_W, SKINS_BTN_H, SKINS_BG_COLOR, 1);
+    this._skinsBtnBg.setStrokeStyle(2, 0x000000, 1);
+    this._skinsBtnBg.setInteractive({ useHandCursor: true });
+
+    this._skinsBtnText = this.add
+      .text(0, 0, "SKINS", {
+        fontFamily: "Arial Black, Arial, sans-serif",
+        fontSize: SKINS_FONT_SIZE,
+        color: SKINS_TEXT_COLOR,
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5);
+
+    this._skinsBtnBg.on("pointerover", () => {
+      if (this._starting) return;
+      this._skinsBtnBg.setFillStyle(SKINS_BG_HOVER, 1);
+    });
+    this._skinsBtnBg.on("pointerout", () => {
+      this._skinsBtnBg.setFillStyle(SKINS_BG_COLOR, 1);
+    });
+    this._skinsBtnBg.on("pointerdown", () => {
+      if (this._starting || this._lockerOpen) return;
+      this._openLocker();
     });
 
     // ---- Status text ----
@@ -507,6 +568,16 @@ export default class MainMenuScene extends Phaser.Scene {
 
     this._statusText?.setPosition(cx, cy + STATUS_OFFSET_Y);
 
+    // ---- SKINS button ----
+    const skinsY = cy + SKINS_BTN_OFFSET_Y;
+    this._skinsBtnBg?.setPosition(cx, skinsY);
+    this._skinsBtnText?.setPosition(cx, skinsY);
+
+    // ---- Locker panel (centered) ----
+    if (this._lockerContainer) {
+      this._lockerContainer.setPosition(cx, cy);
+    }
+
     // ---- Bottom-left: code input area ----
     const codeAreaX = CODE_AREA_X;
     const codeAreaY = h + CODE_AREA_OFFSET_Y;
@@ -542,7 +613,7 @@ export default class MainMenuScene extends Phaser.Scene {
       // IMPORTANT: use create(), NOT joinOrCreate().
       // joinOrCreate would put every player into the same existing room.
       // Each player must get their OWN party room with a unique code.
-      this._partyRoom = await this._client.create("party", { username: name });
+      this._partyRoom = await this._client.create("party", { username: name, skinId: this._skinId });
       this._mySid = this._partyRoom.sessionId;
 
       this._setupPartyListeners();
@@ -599,8 +670,13 @@ export default class MainMenuScene extends Phaser.Scene {
         slot.bg.setStrokeStyle(3, 0xffffff, SLOT_FILLED_STROKE);
         slot.bg.setFillStyle(0x1a1a2e, SLOT_FILLED_ALPHA);
         slot.nameText.setText(member.username || "Player");
+        // Apply skin tint to head
+        const skinDef = SKIN_CATALOG[member.skinId || "default"];
+        if (skinDef?.tint) slot.head.setTint(skinDef.tint);
+        else slot.head.clearTint();
       } else {
         slot.head.setVisible(false);
+        slot.head.clearTint();
         slot.bg.setStrokeStyle(3, 0xffffff, SLOT_EMPTY_STROKE);
         slot.bg.setFillStyle(0x1a1a2e, SLOT_EMPTY_ALPHA);
         slot.nameText.setText("");
@@ -648,7 +724,7 @@ export default class MainMenuScene extends Phaser.Scene {
     try { this._partyRoom?.leave(); } catch (_) {}
     this._partyRoom = null;
 
-    this.scene.start("MatchmakingScene", { username: this._username });
+    this.scene.start("MatchmakingScene", { username: this._username, skinId: this._skinId });
   }
 
   async _startCustomGame() {
@@ -664,10 +740,10 @@ export default class MainMenuScene extends Phaser.Scene {
       return;
     }
 
-    // Update username before starting
+    // Update username + skin before starting
     const name = this._getFinalUsername();
     this._username = name;
-    try { this._partyRoom.send("setName", { name }); } catch (_) {}
+    try { this._partyRoom.send("setName", { name, skinId: this._skinId }); } catch (_) {}
 
     this._statusText?.setText("Starting custom game...");
     this._partyRoom.send("customStart");
@@ -708,7 +784,7 @@ export default class MainMenuScene extends Phaser.Scene {
       // Join the friend's party
       const name = this._getFinalUsername();
       this._username = name;
-      this._partyRoom = await this._client.joinById(roomId, { username: name });
+      this._partyRoom = await this._client.joinById(roomId, { username: name, skinId: this._skinId });
       this._mySid = this._partyRoom.sessionId;
 
       this._setupPartyListeners();
@@ -756,10 +832,10 @@ export default class MainMenuScene extends Phaser.Scene {
     try {
       const gameRoom = await this._client.consumeSeatReservation(reservation);
 
-      // Send name immediately
+      // Send name + skin immediately
       const name = this._getFinalUsername();
       this._username = name;
-      try { gameRoom.send("setName", { name }); } catch (_) {}
+      try { gameRoom.send("setName", { name, skinId: this._skinId }); } catch (_) {}
 
       // Leave party room (handedOff=true prevents onLeave from resetting state)
       try { await this._partyRoom?.leave(); } catch (_) {}
@@ -770,6 +846,7 @@ export default class MainMenuScene extends Phaser.Scene {
         client:      this._client,
         username:    this._username,
         playerCount: playerCount,
+        skinId:      this._skinId,
       });
     } catch (err) {
       console.error("[MainMenu] Failed to consume reservation:", err);
@@ -777,6 +854,155 @@ export default class MainMenuScene extends Phaser.Scene {
       this._handedOff = false;
       this._statusText?.setText("Failed to join game");
     }
+  }
+
+  // ============================================================
+  // Skin locker panel
+  // ============================================================
+
+  _openLocker() {
+    if (this._lockerContainer) return;
+    this._lockerOpen = true;
+    this._selectedSkinId = this._skinId;
+
+    const cam = this.cameras?.main;
+    const cx = cam ? cam.centerX : 0;
+    const cy = cam ? cam.centerY : 0;
+
+    const children = [];
+
+    // Dark backdrop (full panel)
+    const overlay = this.add.rectangle(0, 0, LOCKER_PANEL_W + 40, LOCKER_PANEL_H + 40, 0x000000, 0.7);
+    overlay.setInteractive(); // block clicks behind
+    children.push(overlay);
+
+    // Panel background
+    const panelBg = this.add.rectangle(0, 0, LOCKER_PANEL_W, LOCKER_PANEL_H, LOCKER_BG_COLOR, 1);
+    panelBg.setStrokeStyle(3, 0x444466, 1);
+    children.push(panelBg);
+
+    // Title
+    const title = this.add.text(0, -LOCKER_PANEL_H / 2 + 30, "SKIN LOCKER", {
+      fontFamily: "Arial Black, Arial, sans-serif",
+      fontSize: LOCKER_TITLE_SIZE,
+      color: "#d0aaff",
+      fontStyle: "bold",
+    }).setOrigin(0.5);
+    children.push(title);
+
+    // Close button
+    const closeBtn = this.add.text(LOCKER_PANEL_W / 2 - 24, -LOCKER_PANEL_H / 2 + 12, "X", {
+      fontFamily: "Arial, sans-serif",
+      fontSize: "24px",
+      color: "#ff6666",
+      fontStyle: "bold",
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+    closeBtn.on("pointerdown", () => this._closeLocker());
+    children.push(closeBtn);
+
+    // Grid of skin cards
+    const totalW = LOCKER_GRID_COLS * LOCKER_CARD_W + (LOCKER_GRID_COLS - 1) * LOCKER_CARD_GAP;
+    const startX = -totalW / 2 + LOCKER_CARD_W / 2;
+    const startY = -LOCKER_PANEL_H / 2 + 90;
+
+    this._lockerCards = [];
+
+    SKIN_IDS.forEach((skinId, i) => {
+      const col = i % LOCKER_GRID_COLS;
+      const row = Math.floor(i / LOCKER_GRID_COLS);
+      const cardX = startX + col * (LOCKER_CARD_W + LOCKER_CARD_GAP);
+      const cardY = startY + row * (LOCKER_CARD_H + LOCKER_CARD_GAP) + LOCKER_CARD_H / 2;
+
+      const def = SKIN_CATALOG[skinId];
+
+      // Card background
+      const cardBg = this.add.rectangle(cardX, cardY, LOCKER_CARD_W, LOCKER_CARD_H, 0x222244, 1);
+      const isSelected = skinId === this._selectedSkinId;
+      cardBg.setStrokeStyle(3, isSelected ? LOCKER_HIGHLIGHT : 0x444466, isSelected ? 1 : 0.5);
+      cardBg.setInteractive({ useHandCursor: true });
+      children.push(cardBg);
+
+      // Player head preview with tint
+      const head = this.add.image(cardX, cardY - 20, "player_head");
+      const maxDim = LOCKER_CARD_W - 40;
+      const scale = Math.min(maxDim / head.width, maxDim / head.height);
+      head.setScale(scale);
+      if (def.tint) head.setTint(def.tint);
+      children.push(head);
+
+      // Skin name
+      const nameLabel = this.add.text(cardX, cardY + LOCKER_CARD_H / 2 - 24, def.name, {
+        fontFamily: "Arial, sans-serif",
+        fontSize: LOCKER_NAME_SIZE,
+        color: "#cccccc",
+      }).setOrigin(0.5);
+      children.push(nameLabel);
+
+      // Equipped indicator
+      let equippedLabel = null;
+      if (skinId === this._skinId) {
+        equippedLabel = this.add.text(cardX, cardY - LOCKER_CARD_H / 2 + 14, "EQUIPPED", {
+          fontFamily: "Arial, sans-serif",
+          fontSize: "10px",
+          color: "#88ff88",
+          fontStyle: "bold",
+        }).setOrigin(0.5);
+        children.push(equippedLabel);
+      }
+
+      cardBg.on("pointerdown", () => {
+        this._selectedSkinId = skinId;
+        this._refreshLockerSelection();
+      });
+
+      this._lockerCards.push({ skinId, cardBg, equippedLabel });
+    });
+
+    // Equip button
+    const equipY = LOCKER_PANEL_H / 2 - 40;
+    const equipBg = this.add.rectangle(0, equipY, LOCKER_EQUIP_W, LOCKER_EQUIP_H, 0x2a6b2a, 1);
+    equipBg.setStrokeStyle(2, 0x000000, 1);
+    equipBg.setInteractive({ useHandCursor: true });
+    children.push(equipBg);
+
+    const equipText = this.add.text(0, equipY, "EQUIP", {
+      fontFamily: "Arial Black, Arial, sans-serif",
+      fontSize: "22px",
+      color: "#e0ffe0",
+      fontStyle: "bold",
+    }).setOrigin(0.5);
+    children.push(equipText);
+
+    equipBg.on("pointerover", () => equipBg.setFillStyle(0x3a8f3a, 1));
+    equipBg.on("pointerout", () => equipBg.setFillStyle(0x2a6b2a, 1));
+    equipBg.on("pointerdown", () => {
+      this._skinId = this._selectedSkinId;
+      saveSkinId(this._skinId);
+      if (this._partyRoom) {
+        try { this._partyRoom.send("setSkin", { skinId: this._skinId }); } catch (_) {}
+      }
+      this._closeLocker();
+    });
+
+    this._lockerContainer = this.add.container(cx, cy, children);
+    this._lockerContainer.setDepth(1000);
+  }
+
+  _refreshLockerSelection() {
+    if (!this._lockerCards) return;
+    for (const card of this._lockerCards) {
+      const isSelected = card.skinId === this._selectedSkinId;
+      card.cardBg.setStrokeStyle(3, isSelected ? LOCKER_HIGHLIGHT : 0x444466, isSelected ? 1 : 0.5);
+    }
+  }
+
+  _closeLocker() {
+    if (this._lockerContainer) {
+      this._lockerContainer.destroy(true);
+      this._lockerContainer = null;
+    }
+    this._lockerCards = null;
+    this._lockerOpen = false;
   }
 
   // ============================================================
@@ -917,6 +1143,9 @@ export default class MainMenuScene extends Phaser.Scene {
       this._caretTimer?.remove(false);
     } catch (_) {}
     this._caretTimer = null;
+
+    // Close locker if open
+    this._closeLocker();
 
     // Leave party room if we didn't hand off to a game
     if (!this._handedOff) {

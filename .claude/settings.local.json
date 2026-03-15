@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(find \"C:/Users/decla/Documents/Game Development/getaway_proto - Copy - Copy/src\" -type f -name \"*.js\" -exec wc -l {} +)"
+      "Bash(find \"C:/Users/decla/Documents/Game Development/getaway_proto - Copy - Copy/src\" -type f -name \"*.js\" -exec wc -l {} +)",
+      "Bash(find 'C:\\\\Users\\\\decla\\\\Documents\\\\Game Development\\\\getaway_proto - Copy - Copy\\\\server' -type f -name *.js -o -name *.ts)",
+      "Bash(find 'C:\\\\Users\\\\decla\\\\Documents\\\\Game Development\\\\getaway_proto - Copy - Copy\\\\src' -maxdepth 1 -type f -name *.js)"
     ]
   }
 }

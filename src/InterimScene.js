@@ -14,6 +14,7 @@
 import Phaser from "phaser";
 import GameMap  from "./GameMap.js";
 import { preloadGuns } from "./gunCatalog.js";
+import { SKIN_CATALOG } from "./skinCatalog.js";
 
 // Safety timeout (ms): if the server never sends "interimEnd"
 // (e.g. server crash / lost connection), transition anyway.
@@ -82,6 +83,7 @@ export default class InterimScene extends Phaser.Scene {
     this._room     = data?.room     ?? null;
     this._client   = data?.client   ?? null;
     this._username = data?.username ?? "Player";
+    this._skinId   = data?.skinId   ?? "default";
 
     // ── Reset all transition flags here (before preload) ──
     this._assetsReady        = false;
@@ -218,8 +220,21 @@ export default class InterimScene extends Phaser.Scene {
       );
       head.setScale(scale).setDepth(3);
 
-      // ── Player name ──
+      // ── Skin tint ──
       const entry  = this._scores ? this._scores[i] : null;
+      let skinId = entry?.skinId || "default";
+      // If no skinId in scores, try live room state
+      if (skinId === "default" && this._room?.state?.players) {
+        let idx = 0;
+        this._room.state.players.forEach((st) => {
+          if (idx === i && st.skinId) skinId = st.skinId;
+          idx++;
+        });
+      }
+      const skinDef = SKIN_CATALOG[skinId];
+      if (skinDef?.tint) head.setTint(skinDef.tint);
+
+      // ── Player name ──
       const name   = resolvedNames[i] || entry?.name || "Player";
       const points = entry ? Math.max(0, Number(entry.points) || 0) : 0;
 
@@ -416,6 +431,7 @@ export default class InterimScene extends Phaser.Scene {
           room:     this._room,
           client:   this._client,
           username: this._username,
+          skinId:   this._skinId,
         });
       },
     });

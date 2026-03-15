@@ -59,6 +59,17 @@ export default class PartyRoom extends Room {
       let   name = String(raw ?? "").trim().replace(/\s+/g, " ").slice(0, 16);
       if (!name) name = "Player";
       entry.username = name;
+      if (msg?.skinId) {
+        entry.skinId = String(msg.skinId).trim().slice(0, 32) || "default";
+      }
+      this._broadcastPartyUpdate();
+    });
+
+    this.onMessage("setSkin", (client, msg) => {
+      const entry = this.members.get(client.sessionId);
+      if (!entry) return;
+      const raw = typeof msg === "string" ? msg : msg?.skinId;
+      entry.skinId = String(raw ?? "").trim().slice(0, 32) || "default";
       this._broadcastPartyUpdate();
     });
 
@@ -86,8 +97,10 @@ export default class PartyRoom extends Room {
     let slotIndex = 0;
     while (usedSlots.has(slotIndex) && slotIndex < 4) slotIndex++;
 
+    const skinId = String(options?.skinId ?? "").trim().slice(0, 32) || "default";
     this.members.set(client.sessionId, {
       username,
+      skinId,
       slotIndex,
       joinOrder: this._nextJoinOrder++,
     });
@@ -142,6 +155,7 @@ export default class PartyRoom extends Room {
       members.push({
         sessionId: sid,
         username:  m.username,
+        skinId:    m.skinId || "default",
         slotIndex: m.slotIndex,
         isLeader:  sid === this.leaderSid,
       });
