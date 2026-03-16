@@ -12,13 +12,7 @@ import VisibilityManager from "./VisibilityManager.js";
 import { loadSettings } from "./settings.js";
 
 // connects to same host (works on LAN)
-// Check if ngrok URL is passed in query params
-const params = new URLSearchParams(window.location.search);
-const ngrokServer = params.get('ngrok');
-
-const COLYSEUS_URL = ngrokServer 
-  ? `wss://${ngrokServer}`
-  : `${protocol}//${hostname}:2567`;
+const COLYSEUS_URL = `${window.location.protocol}//${window.location.hostname}:2567`;
 const ROOM_NAME = "lobby";
 
 export const NET_SEND_HZ = 60;
