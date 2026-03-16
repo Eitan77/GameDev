@@ -1,8 +1,11 @@
 // src/UIScene.js
-// HUD overlay: health bar (bottom-left), round timer (top-center), leaderboard (bottom-right).
+// HUD overlay: health bar (bottom-left), round timer (top-center), leaderboard (bottom-right),
+// killfeed (top-right).
 
 import Phaser from "phaser";
 import { SettingsOverlay } from "./settings.js";
+import { SKIN_CATALOG } from "./skinCatalog.js";
+import { GUN_CATALOG } from "./gunCatalog.js";
 
 // ------------------------------
 // Health bar images
@@ -96,6 +99,69 @@ const HUD_BTN_STROKE = 0x3a4260;
 const HUD_BTN_FONT = { fontFamily: "Arial, sans-serif", fontSize: "20px", color: "#ffffff" };
 const HUD_BTN_DEPTH = 110;
 
+// ------------------------------
+// KILLFEED TWEAK KNOBS
+// ------------------------------
+
+// Overall position: distance from the top-right corner of the screen.
+const KF_MARGIN_RIGHT_PX = 16;
+const KF_MARGIN_TOP_PX    = 16;
+
+// Master scale for the entire killfeed (all sizes below are multiplied by this).
+const KF_SCALE = 1.0;
+
+// Entry row dimensions
+const KF_ENTRY_H_PX       = 36;   // height of each row
+const KF_ENTRY_GAP_PX     = 4;    // vertical gap between rows
+const KF_ENTRY_RADIUS     = 4;    // corner radius on the background
+
+// Background
+const KF_BG_COLOR         = 0x000000;
+const KF_BG_ALPHA         = 0.55;
+const KF_BG_PADDING_PX    = 6;    // horizontal padding inside each entry
+
+// Horizontal spacing between components within an entry
+const KF_COMPONENT_GAP_PX = 5;
+
+// --- Killer skin icon (small player silhouette with tint) ---
+const KF_KILLER_SKIN_W_PX = 22;   // display width
+const KF_KILLER_SKIN_H_PX = 22;   // display height
+
+// --- Killer name text ---
+const KF_KILLER_NAME_FONT_SIZE_PX = 12;
+const KF_KILLER_NAME_MAX_CHARS    = 10;
+
+// --- Gun pickup icon ---
+const KF_GUN_ICON_W_PX    = 54;   // display width
+const KF_GUN_ICON_H_PX    = 18;   // display height
+
+// --- Fall symbol (replaces gun icon when killed by out-of-bounds) ---
+const KF_FALL_SYMBOL          = "▼";
+const KF_FALL_FONT_SIZE_PX    = 16;
+const KF_FALL_ICON_W_PX       = 22; // reserved width for fall symbol text
+const KF_FALL_COLOR           = "#ff4444";
+
+// --- Victim skin icon ---
+const KF_VICTIM_SKIN_W_PX = 22;  // display width
+const KF_VICTIM_SKIN_H_PX = 22;  // display height
+
+// --- Victim name text ---
+const KF_VICTIM_NAME_FONT_SIZE_PX = 12;
+const KF_VICTIM_NAME_MAX_CHARS    = 10;
+
+// Shared text styles
+const KF_FONT_FAMILY  = "Arial, sans-serif";
+const KF_NAME_COLOR   = "#ffffff";
+
+// Timing (ms)
+const KF_DISPLAY_MS   = 4000;  // how long each entry is fully visible
+const KF_FADE_IN_MS   = 150;   // fade-in on entry appearance
+const KF_FADE_OUT_MS  = 500;   // fade-out before removal
+const KF_SLIDE_MS     = 220;   // slide-up animation when an entry is removed
+
+// Depth (above HUD buttons)
+const KF_DEPTH = 106;
+
 function clamp01(x) {
   if (x <= 0) return 0;
   if (x >= 1) return 1;
@@ -143,6 +209,10 @@ export default class UIScene extends Phaser.Scene {
     this._settingsBtnBg = null;
     this._settingsBtnIcon = null;
     this._settingsOverlay = null;
+
+    // Killfeed
+    // Each entry: { container, w (scaled px), addedAt, fading }
+    this._kfEntries = [];
   }
 
   init(data) {
@@ -250,6 +320,11 @@ export default class UIScene extends Phaser.Scene {
     this._leaveBtnIcon = null;
     this._settingsBtnBg = null;
     this._settingsBtnIcon = null;
+
+    for (const entry of this._kfEntries) {
+      try { entry.container?.destroy(true); } catch (_) {}
+    }
+    this._kfEntries = [];
   }
 
   // -----------------------------
@@ -663,7 +738,183 @@ export default class UIScene extends Phaser.Scene {
     }
   }
 
+  // ----------------------------------------
+  // Killfeed
+  // ----------------------------------------
+
+  // Build and display one killfeed entry from a "kill" message payload.
+  _addKillfeedEntry(killData) {
+    const { killerSid, killerName, killerSkinId, gunId, isFall, victimName, victimSkinId } = killData;
+
+    const killerTint = SKIN_CATALOG[killerSkinId]?.tint ?? null;
+    const victimTint  = SKIN_CATALOG[victimSkinId]?.tint  ?? null;
+
+    const nameFont = { fontFamily: KF_FONT_FAMILY, fontSize: `${KF_KILLER_NAME_FONT_SIZE_PX}px`, color: KF_NAME_COLOR };
+    const victimFont = { fontFamily: KF_FONT_FAMILY, fontSize: `${KF_VICTIM_NAME_FONT_SIZE_PX}px`, color: KF_NAME_COLOR };
+
+    // Measure text widths with temporary off-screen objects
+    const killerLabel = killerSid
+      ? this.add.text(-9999, -9999, (killerName || "").slice(0, KF_KILLER_NAME_MAX_CHARS), nameFont)
+      : null;
+    const victimLabel = this.add.text(-9999, -9999, (victimName || "").slice(0, KF_VICTIM_NAME_MAX_CHARS), victimFont);
+
+    const killerTW = killerLabel ? Math.ceil(killerLabel.width) : 0;
+    const victimTW = Math.ceil(victimLabel.width);
+    const midIconW = isFall ? KF_FALL_ICON_W_PX : KF_GUN_ICON_W_PX;
+
+    // Calculate total unscaled width
+    let contentW = KF_BG_PADDING_PX;
+    if (killerSid) {
+      contentW += KF_KILLER_SKIN_W_PX + KF_COMPONENT_GAP_PX + killerTW + KF_COMPONENT_GAP_PX;
+    }
+    contentW += midIconW + KF_COMPONENT_GAP_PX;
+    contentW += KF_VICTIM_SKIN_W_PX + KF_COMPONENT_GAP_PX + victimTW + KF_BG_PADDING_PX;
+
+    // Build container
+    const container = this.add.container(0, 0);
+    container.setDepth(KF_DEPTH);
+    container.setAlpha(0);
+
+    // Background
+    const bg = this.add.graphics();
+    bg.fillStyle(KF_BG_COLOR, KF_BG_ALPHA);
+    bg.fillRoundedRect(0, 0, contentW, KF_ENTRY_H_PX, KF_ENTRY_RADIUS);
+    container.add(bg);
+
+    const cy = KF_ENTRY_H_PX / 2;
+    let cx = KF_BG_PADDING_PX;
+
+    // --- Killer side (omitted for fall deaths with no killer) ---
+    if (killerSid) {
+      // Killer skin icon
+      if (this.textures.exists("player")) {
+        const icon = this.add.image(cx + KF_KILLER_SKIN_W_PX / 2, cy, "player");
+        icon.setDisplaySize(KF_KILLER_SKIN_W_PX, KF_KILLER_SKIN_H_PX);
+        if (killerTint) icon.setTint(killerTint);
+        container.add(icon);
+      }
+      cx += KF_KILLER_SKIN_W_PX + KF_COMPONENT_GAP_PX;
+
+      // Killer name
+      killerLabel.x = cx;
+      killerLabel.y = cy;
+      killerLabel.setOrigin(0, 0.5);
+      container.add(killerLabel);
+      cx += killerTW + KF_COMPONENT_GAP_PX;
+    } else if (killerLabel) {
+      killerLabel.destroy();
+    }
+
+    // --- Middle: gun icon or fall symbol ---
+    if (isFall) {
+      const fallText = this.add.text(cx + KF_FALL_ICON_W_PX / 2, cy, KF_FALL_SYMBOL, {
+        fontFamily: KF_FONT_FAMILY,
+        fontSize: `${KF_FALL_FONT_SIZE_PX}px`,
+        color: KF_FALL_COLOR,
+      });
+      fallText.setOrigin(0.5, 0.5);
+      container.add(fallText);
+    } else {
+      const gunDef = gunId ? GUN_CATALOG[gunId] : null;
+      if (gunDef && this.textures.exists(gunDef.pickupKey)) {
+        const gunImg = this.add.image(cx + KF_GUN_ICON_W_PX / 2, cy, gunDef.pickupKey);
+        gunImg.setDisplaySize(KF_GUN_ICON_W_PX, KF_GUN_ICON_H_PX);
+        container.add(gunImg);
+      }
+    }
+    cx += midIconW + KF_COMPONENT_GAP_PX;
+
+    // --- Victim skin icon ---
+    if (this.textures.exists("player")) {
+      const icon = this.add.image(cx + KF_VICTIM_SKIN_W_PX / 2, cy, "player");
+      icon.setDisplaySize(KF_VICTIM_SKIN_W_PX, KF_VICTIM_SKIN_H_PX);
+      if (victimTint) icon.setTint(victimTint);
+      container.add(icon);
+    }
+    cx += KF_VICTIM_SKIN_W_PX + KF_COMPONENT_GAP_PX;
+
+    // --- Victim name ---
+    victimLabel.x = cx;
+    victimLabel.y = cy;
+    victimLabel.setOrigin(0, 0.5);
+    container.add(victimLabel);
+
+    // Scale and position
+    container.setScale(KF_SCALE);
+
+    const scaledW = contentW * KF_SCALE;
+    const scaledH = KF_ENTRY_H_PX * KF_SCALE;
+    const slot    = scaledH + KF_ENTRY_GAP_PX * KF_SCALE;
+    const screenW = this.scale.width;
+
+    container.x = Math.round(screenW - scaledW - KF_MARGIN_RIGHT_PX);
+    container.y = Math.round(KF_MARGIN_TOP_PX + this._kfEntries.length * slot);
+
+    // Fade in
+    this.tweens.add({ targets: container, alpha: 1, duration: KF_FADE_IN_MS, ease: "Linear" });
+
+    this._kfEntries.push({ container, w: scaledW, addedAt: this.time.now, fading: false });
+  }
+
+  // Slide active entries to their correct stacked positions.
+  _slideKillfeedEntries() {
+    const scaledH = KF_ENTRY_H_PX * KF_SCALE;
+    const slot    = scaledH + KF_ENTRY_GAP_PX * KF_SCALE;
+    const screenW = this.scale.width;
+
+    let i = 0;
+    for (const entry of this._kfEntries) {
+      if (entry.fading) continue;
+      const targetY = Math.round(KF_MARGIN_TOP_PX + i * slot);
+      this.tweens.add({
+        targets: entry.container,
+        y: targetY,
+        duration: KF_SLIDE_MS,
+        ease: "Power2",
+      });
+      // Keep x correct after any resize
+      entry.container.x = Math.round(screenW - entry.w - KF_MARGIN_RIGHT_PX);
+      i++;
+    }
+  }
+
+  // Poll GameScene for new kill events and age-out old entries.
+  _updateKillfeed() {
+    // Consume pending events from GameScene
+    const gameScene = this.scene.get(this.gameSceneKey);
+    const pending   = gameScene?._pendingKillEvents;
+    if (pending?.length) {
+      const events = pending.splice(0, pending.length);
+      for (const ev of events) {
+        this._addKillfeedEntry(ev);
+      }
+    }
+
+    // Age entries — start fade when display time exceeded
+    const now = this.time.now;
+    for (let i = this._kfEntries.length - 1; i >= 0; i--) {
+      const entry = this._kfEntries[i];
+      if (entry.fading) continue;
+      if (now - entry.addedAt < KF_DISPLAY_MS) continue;
+
+      entry.fading = true;
+      this.tweens.add({
+        targets: entry.container,
+        alpha: 0,
+        duration: KF_FADE_OUT_MS,
+        ease: "Linear",
+        onComplete: () => {
+          try { entry.container.destroy(true); } catch (_) {}
+          const idx = this._kfEntries.indexOf(entry);
+          if (idx !== -1) this._kfEntries.splice(idx, 1);
+          this._slideKillfeedEntries();
+        },
+      });
+    }
+  }
+
   update() {
     this.ui(false);
+    this._updateKillfeed();
   }
 }

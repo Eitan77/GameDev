@@ -526,6 +526,20 @@ export default class LobbyRoom extends Room {
 
     if (typeof sim.setDead === "function") sim.setDead(true);
 
+    // Broadcast kill event for killfeed
+    const killerSid = killInfo?.from ? String(killInfo.from) : null;
+    const killerSt = killerSid ? this.state.players.get(killerSid) : null;
+    this.broadcast("kill", {
+      victimSid: sessionId,
+      victimName: st?.name || "",
+      victimSkinId: st?.skinId || "default",
+      killerSid: killerSid,
+      killerName: killerSt?.name || "",
+      killerSkinId: killerSt?.skinId || "default",
+      gunId: killInfo?.gunId || null,
+      isFall: killInfo?.source === "killzone",
+    });
+
     const kx = Number(killInfo?.kx);
     const ky = Number(killInfo?.ky);
     const kb = Number(killInfo?.kb);

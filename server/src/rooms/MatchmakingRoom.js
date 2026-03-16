@@ -2,7 +2,7 @@
 
 import { Room, matchMaker } from "colyseus";
 
-const MATCH_SIZE = 1;
+const MATCH_SIZE = 2;
 
 export default class MatchmakingRoom extends Room {
   onCreate() {
