@@ -108,7 +108,7 @@ const KF_MARGIN_RIGHT_PX = 16;
 const KF_MARGIN_TOP_PX    = 16;
 
 // Master scale for the entire killfeed (all sizes below are multiplied by this).
-const KF_SCALE = 1.0;
+const KF_SCALE = 2.0;
 
 // Entry row dimensions
 const KF_ENTRY_H_PX       = 36;   // height of each row
@@ -251,6 +251,11 @@ export default class UIScene extends Phaser.Scene {
     }
     if (!this.textures.exists(HEALTH_SEG_KEY)) {
       this.load.image(HEALTH_SEG_KEY, encodeURI(HEALTH_SEG_SRC));
+    }
+
+    // Killfeed head icon
+    if (!this.textures.exists("player_head")) {
+      this.load.image("player_head", "assets/images/PlayerHead.png");
     }
   }
 
@@ -787,8 +792,8 @@ export default class UIScene extends Phaser.Scene {
     // --- Killer side (omitted for fall deaths with no killer) ---
     if (killerSid) {
       // Killer skin icon
-      if (this.textures.exists("player")) {
-        const icon = this.add.image(cx + KF_KILLER_SKIN_W_PX / 2, cy, "player");
+      if (this.textures.exists("player_head")) {
+        const icon = this.add.image(cx + KF_KILLER_SKIN_W_PX / 2, cy, "player_head");
         icon.setDisplaySize(KF_KILLER_SKIN_W_PX, KF_KILLER_SKIN_H_PX);
         if (killerTint) icon.setTint(killerTint);
         container.add(icon);
@@ -825,8 +830,8 @@ export default class UIScene extends Phaser.Scene {
     cx += midIconW + KF_COMPONENT_GAP_PX;
 
     // --- Victim skin icon ---
-    if (this.textures.exists("player")) {
-      const icon = this.add.image(cx + KF_VICTIM_SKIN_W_PX / 2, cy, "player");
+    if (this.textures.exists("player_head")) {
+      const icon = this.add.image(cx + KF_VICTIM_SKIN_W_PX / 2, cy, "player_head");
       icon.setDisplaySize(KF_VICTIM_SKIN_W_PX, KF_VICTIM_SKIN_H_PX);
       if (victimTint) icon.setTint(victimTint);
       container.add(icon);

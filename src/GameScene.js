@@ -224,6 +224,9 @@ export default class GameScene extends Phaser.Scene {
     // When transitioning to InterimScene mid-match, we keep the room alive.
     this._keepRoom = false;
 
+    // Kill events queued for UIScene killfeed
+    this._pendingKillEvents = [];
+
     // Tab-visibility manager: prevents audio catch-up when tab is restored.
     this.visibility = null;
   }
@@ -557,6 +560,10 @@ export default class GameScene extends Phaser.Scene {
       const rate = Math.max(0.01, Number(extractMessageProperty(msg, "r", "rate", 1)));
 
       this.sound.play(key, { volume, rate });
+    });
+
+    this.room.onMessage("kill", (msg) => {
+      this._pendingKillEvents.push(msg);
     });
 
     // ✅ Round over: a player reached the finish line.

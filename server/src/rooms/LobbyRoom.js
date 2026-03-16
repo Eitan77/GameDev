@@ -754,6 +754,7 @@ export default class LobbyRoom extends Room {
   // ------------------------------------------------------------
   updateRoundTimer() {
     if (!this._roundStarted) return;
+    if (this._finishLineTriggered) return;
 
     const remMs = this._roundEndMs - Date.now();
     const secLeftRaw = remMs <= 0 ? 0 : Math.ceil(remMs / 1000);
@@ -761,6 +762,24 @@ export default class LobbyRoom extends Room {
 
     if (this.state.roundTimeLeftSec !== secLeft) {
       this.state.roundTimeLeftSec = secLeft;
+    }
+
+    // When the timer expires, end the round — give the point to the leader.
+    if (secLeft === 0) {
+      let leaderId = null;
+      let leaderOrder = -Infinity;
+
+      this.state.players.forEach((st, sid) => {
+        const order = Number(st.cpOrder) || 0;
+        if (order > leaderOrder) {
+          leaderOrder = order;
+          leaderId = sid;
+        }
+      });
+
+      if (leaderId) {
+        this.triggerRoundOver(leaderId);
+      }
     }
   }
 
