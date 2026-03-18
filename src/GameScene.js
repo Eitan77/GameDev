@@ -257,6 +257,10 @@ export default class GameScene extends Phaser.Scene {
     // checkpoint marker image
     this.load.image("checkpoint", "assets/images/checkpoint.png");
 
+    if (!this.cache.audio.exists("game_music")) {
+      this.load.audio("game_music", "assets/audio/game_music.mp3");
+    }
+
     GameMap.preload(this, this._mapName);
     preloadGuns(this);
 
@@ -336,6 +340,12 @@ export default class GameScene extends Phaser.Scene {
     // Apply user volume setting
     const settings = loadSettings();
     this.sound.volume = settings.volume;
+
+    // Start game music
+    if (this.cache.audio.exists("game_music")) {
+      this._gameMusic = this.sound.add("game_music", { loop: true, volume: settings.musicVolume ?? 0.4 });
+      this._gameMusic.play();
+    }
 
     this.map = new GameMap(this, this._mapName).create();
 
@@ -585,18 +595,21 @@ export default class GameScene extends Phaser.Scene {
       const clientRef = this.client;
       const username = this._username;
       const playerCount = this.players.size;
+      const skinId = this._skinId;
 
-      this.scene.start("InterimScene", {
-        room: roomRef,
-        client: clientRef,
-        username,
-        playerCount,
-        scores,
-        winnerName,
-        winnerId,
-        isRoundOver: true,
-        gameOver,
-        skinId: this._skinId,
+      this._fadeOutGameMusic(() => {
+        this.scene.start("InterimScene", {
+          room: roomRef,
+          client: clientRef,
+          username,
+          playerCount,
+          scores,
+          winnerName,
+          winnerId,
+          isRoundOver: true,
+          gameOver,
+          skinId,
+        });
       });
     });
 
@@ -729,6 +742,19 @@ export default class GameScene extends Phaser.Scene {
     return null;
   }
 
+  _fadeOutGameMusic(onDone, duration = 500) {
+    if (!this._gameMusic?.isPlaying) { onDone?.(); return; }
+    this.tweens.add({
+      targets: this._gameMusic,
+      volume: 0,
+      duration,
+      onComplete: () => {
+        try { this._gameMusic?.stop(); } catch (_) {}
+        onDone?.();
+      },
+    });
+  }
+
   registerCleanup() {
     if (this._cleanupRegistered) return;
     this._cleanupRegistered = true;
@@ -782,6 +808,10 @@ export default class GameScene extends Phaser.Scene {
 
     try { this._coverOverlay?.destroy(); } catch (_) {}
     this._coverOverlay = null;
+
+    // Stop game music (fade should have already stopped it; this is a safety net)
+    try { this._gameMusic?.stop(); } catch (_) {}
+    this._gameMusic = null;
 
     // Stop the HUD overlay so it doesn't bleed over InterimScene (or any
     // other scene that follows).  ensureUIScene() will relaunch it when

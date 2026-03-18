@@ -15,6 +15,7 @@ import Phaser from "phaser";
 import GameMap  from "./GameMap.js";
 import { preloadGuns } from "./gunCatalog.js";
 import { SKIN_CATALOG } from "./skinCatalog.js";
+import { loadSettings } from "./settings.js";
 
 // Safety timeout (ms): if the server never sends "interimEnd"
 // (e.g. server crash / lost connection), transition anyway.
@@ -188,6 +189,16 @@ export default class InterimScene extends Phaser.Scene {
     this.load.image("arm",        "assets/images/arm.png");
     this.load.image("checkpoint", "assets/images/checkpoint.png");
 
+    // Victory fanfare (game-over winner screen)
+    if (!this.cache.audio.exists("victory_fanfare")) {
+      this.load.audio("victory_fanfare", "assets/audio/victory_fanfare.mp3");
+    }
+
+    // Game music (preloaded here so GameScene doesn't need a separate load)
+    if (!this.cache.audio.exists("game_music")) {
+      this.load.audio("game_music", "assets/audio/game_music.mp3");
+    }
+
     GameMap.preload(this); // no mapName arg = preload all maps
     preloadGuns(this);
 
@@ -315,7 +326,13 @@ export default class InterimScene extends Phaser.Scene {
       y: H,
       duration: CURTAIN_IN_MS,
       ease: "Power2",
-      onComplete: () => { try { curtainIn.destroy(); } catch (_) {} },
+      onComplete: () => {
+        try { curtainIn.destroy(); } catch (_) {}
+        if (this._gameOver && this.cache.audio.exists("victory_fanfare")) {
+          const musicVol = loadSettings().musicVolume ?? 0.4;
+          this.sound.play("victory_fanfare", { volume: Math.min(1, musicVol * 2) });
+        }
+      },
     });
 
     // Safety: if the server never responds (crash / disconnect), don't

@@ -27,15 +27,15 @@ export const GUN_CATALOG = {
     heldAngleOffsetRad: Math.PI / 2,
     heldFlipWithPlayer: true,
 
-    ammo: 50,
+    ammo: 2,
 
     aimRadiusPx: 900,
     autoAimSpeedDegPerSec: 300,
 
-    damage: 5,
+    damage: 120,
 
-    automatic: true,
-    timeBetweenShots: 60,
+    automatic: false,
+    timeBetweenShots: 500,
 
     deathKnockbackPxPerSec: 2000,
     deathKnockbackUpPxPerSec: 160,
@@ -56,7 +56,7 @@ export const GUN_CATALOG = {
     reloadSoundRate: 1.0,
 
     fireToReloadDelaySec: 0.5,
-    shotsPerReload: 5,
+    shotsPerReload: 1,
 
     bulletEnabled: true,
     bulletWidthPx: 10,
@@ -92,15 +92,15 @@ export const GUN_CATALOG = {
     heldAngleOffsetRad: Math.PI / 2,
     heldFlipWithPlayer: true,
 
-    ammo: 30,
+    ammo: 20,
 
     aimRadiusPx: 600,
     autoAimSpeedDegPerSec: 300,
 
-    damage: 3,
+    damage: 8,
 
     automatic: true,
-    timeBetweenShots: 100,
+    timeBetweenShots: 140,
 
     deathKnockbackPxPerSec: 1400,
     deathKnockbackUpPxPerSec: 120,
@@ -157,12 +157,12 @@ export const GUN_CATALOG = {
     heldAngleOffsetRad: Math.PI / 2,
     heldFlipWithPlayer: true,
 
-    ammo: 10,
+    ammo: 4,
 
     aimRadiusPx: 350,
     autoAimSpeedDegPerSec: 300,
 
-    damage: 12,
+    damage: 50,
 
     automatic: false,
     timeBetweenShots: 700,
@@ -177,7 +177,7 @@ export const GUN_CATALOG = {
 
     fireSoundKey: "sniper_fire_snd",
     fireSoundPath: "assets/audio/sniper_fire.mp3",
-    fireSoundVolume: 0.9,
+    fireSoundVolume: 0.5,
     fireSoundRate: 0.5,
 
     reloadSoundKey: "sniper_reload_snd",
@@ -186,7 +186,7 @@ export const GUN_CATALOG = {
     reloadSoundRate: 0.8,
 
     fireToReloadDelaySec: 0.8,
-    shotsPerReload: 2,
+    shotsPerReload: 1,
 
     bulletEnabled: true,
     bulletWidthPx: 14,

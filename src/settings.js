@@ -6,11 +6,11 @@
 
 // ---- localStorage keys & defaults ----
 const STORAGE_KEY = "getaway_settings";
-const DEFAULTS = { volume: 1, tiltSensitivity: 0.5 };
+const DEFAULTS = { volume: 0.5, musicVolume: 0.25, tiltSensitivity: 0.25 };
 
 // ---- Overlay visual constants ----
 const PANEL_W = 480;
-const PANEL_H = 360;
+const PANEL_H = 440;
 const PANEL_COLOR = 0x1a1f2e;
 const PANEL_ALPHA = 0.97;
 const PANEL_RADIUS = 18;
@@ -46,6 +46,7 @@ export function loadSettings() {
       const parsed = JSON.parse(raw);
       return {
         volume: clamp01(parsed.volume ?? DEFAULTS.volume),
+        musicVolume: clamp01(parsed.musicVolume ?? DEFAULTS.musicVolume),
         tiltSensitivity: clamp01(parsed.tiltSensitivity ?? DEFAULTS.tiltSensitivity),
       };
     }
@@ -75,6 +76,8 @@ export class SettingsOverlay {
     this._settings = loadSettings();
     this._onDrag = null;
     this._onResize = null;
+    // Set externally to receive live updates as the music slider moves
+    this.onMusicVolumeChange = null;
   }
 
   get isOpen() {
@@ -142,7 +145,12 @@ export class SettingsOverlay {
     const panelTop = cy - PANEL_H / 2;
     this._buildSlider(s, cx, panelTop + SLIDER_START_Y, "Volume",
       this._settings.volume, (v) => { this._settings.volume = v; });
-    this._buildSlider(s, cx, panelTop + SLIDER_START_Y + SLIDER_GAP_Y, "Tilt Sensitivity",
+    this._buildSlider(s, cx, panelTop + SLIDER_START_Y + SLIDER_GAP_Y, "Music Volume",
+      this._settings.musicVolume, (v) => {
+        this._settings.musicVolume = v;
+        if (this.onMusicVolumeChange) this.onMusicVolumeChange(v);
+      });
+    this._buildSlider(s, cx, panelTop + SLIDER_START_Y + SLIDER_GAP_Y * 2, "Tilt Sensitivity",
       this._settings.tiltSensitivity, (v) => { this._settings.tiltSensitivity = v; });
 
     // Drag handler

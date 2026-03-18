@@ -72,9 +72,15 @@ export default class VisibilityManager {
 
   _applyVisible() {
     try {
-      // Kill every sound that accumulated during the catch-up event burst.
-      this._scene.sound.stopAll();
+      // Stop only non-looping sounds (the catch-up SFX burst).
+      // Looping sounds (music) were muted, not paused — they're at the right
+      // position already, so we leave them alone and just unmute below.
+      const sounds = this._scene.sound.sounds.slice(); // copy to avoid mutation issues
+      for (const s of sounds) {
+        if (!s.loop) { try { s.stop(); } catch (_) {} }
+      }
     } catch (_) {}
+
     try {
       // Now safe to re-enable audio.
       this._scene.sound.setMute(false);

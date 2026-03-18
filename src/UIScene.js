@@ -116,14 +116,14 @@ const LB_SWAP_DURATION_MS = 280;
 // ------------------------------
 // HUD action buttons (top-left)
 // ------------------------------
-const HUD_BTN_SIZE = 40;
+const HUD_BTN_SIZE = 80;
 const HUD_BTN_MARGIN = 16;
 const HUD_BTN_GAP = 10;
 const HUD_BTN_COLOR = 0x1a1f2e;
 const HUD_BTN_HOVER = 0x2d3342;
 const HUD_BTN_ALPHA = 0.85;
 const HUD_BTN_STROKE = 0x3a4260;
-const HUD_BTN_FONT = { fontFamily: "Arial, sans-serif", fontSize: "20px", color: "#ffffff" };
+const HUD_BTN_FONT = { fontFamily: "Arial, sans-serif", fontSize: "40px", color: "#ffffff" };
 const HUD_BTN_DEPTH = 110;
 
 // ------------------------------
@@ -411,10 +411,16 @@ export default class UIScene extends Phaser.Scene {
 
     // Settings overlay instance
     this._settingsOverlay = new SettingsOverlay(this);
+    this._settingsOverlay.onMusicVolumeChange = (v) => {
+      const gameScene = this.scene.get(this.gameSceneKey);
+      if (gameScene?._gameMusic) gameScene._gameMusic.setVolume(v);
+    };
     this._settingsOverlay.onClose = (settings) => {
       const gameScene = this.scene.get(this.gameSceneKey);
-      // Apply volume to the game scene's sound manager
+      // Apply SFX volume to the game scene's sound manager
       if (gameScene?.sound) gameScene.sound.volume = settings.volume;
+      // Apply music volume to game music
+      if (gameScene?._gameMusic) gameScene._gameMusic.setVolume(settings.musicVolume);
       // Send tilt sensitivity to server
       try { gameScene?.room?.send("settings", { tiltSensitivity: settings.tiltSensitivity }); } catch (_) {}
     };

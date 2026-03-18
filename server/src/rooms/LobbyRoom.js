@@ -873,8 +873,11 @@ export default class LobbyRoom extends Room {
           r: defBefore.fireSoundRate ?? 1,
         });
 
-        // Optional reload sound after last shot
-        if ((sim?.ammo ?? 0) <= 0 && defBefore.reloadSoundKey) {
+        // Reload sound every shotsPerReload shots (or when out of ammo)
+        const _ammoAfter = sim?.ammo ?? 0;
+        const _spr = defBefore.shotsPerReload ?? 0;
+        const _shouldReload = _spr > 0 ? (_ammoAfter > 0 && _ammoAfter % _spr === 0) : false;
+        if (_shouldReload && defBefore.reloadSoundKey) {
           soundDelayedEvents.push({
             kind: "soundDelayed",
             delaySec: defBefore.fireToReloadDelaySec ?? 0,

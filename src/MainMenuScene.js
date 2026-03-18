@@ -1,7 +1,7 @@
 import Phaser from "phaser";
 import { Client } from "@colyseus/sdk";
 import { SKIN_CATALOG, SKIN_IDS, loadSkinId, saveSkinId } from "./skinCatalog.js";
-import { SettingsOverlay } from "./settings.js";
+import { SettingsOverlay, loadSettings } from "./settings.js";
 
 // ============================================================
 // MainMenuScene
@@ -21,6 +21,9 @@ const COLYSEUS_URL = `${window.location.protocol}//${window.location.hostname}:2
 // ============================================================
 // UI TUNING CONSTANTS — adjust these to reposition / resize
 // ============================================================
+
+// ---- Music ----
+const LOBBY_MUSIC_VOLUME  = 0.4;    // default; overridden by saved settings
 
 // ---- Title ----
 const TITLE_FONT_SIZE     = "60px";
@@ -131,12 +134,12 @@ const LOCKER_EQUIP_H      = 44;
 const LOCKER_HIGHLIGHT     = 0xd0aaff;
 
 // ---- Settings button (top-right) ----
-const SETTINGS_BTN_SIZE = 44;
+const SETTINGS_BTN_SIZE = 88;
 const SETTINGS_BTN_MARGIN = 18;
 const SETTINGS_BTN_COLOR = 0x1a1f2e;
 const SETTINGS_BTN_HOVER = 0x2d3342;
 const SETTINGS_BTN_STROKE = 0x3a4260;
-const SETTINGS_BTN_FONT = { fontFamily: "Arial, sans-serif", fontSize: "22px", color: "#ffffff" };
+const SETTINGS_BTN_FONT = { fontFamily: "Arial, sans-serif", fontSize: "44px", color: "#ffffff" };
 
 // ============================================================
 
@@ -214,6 +217,9 @@ export default class MainMenuScene extends Phaser.Scene {
     this._settingsBtnBg = null;
     this._settingsBtnIcon = null;
     this._settingsOverlay = null;
+
+    // Background video
+    this._bgVideo = null;
   }
 
   preload() {
@@ -221,6 +227,10 @@ export default class MainMenuScene extends Phaser.Scene {
     this.load.image("btn_pushed",   "assets/images/StartButtonPushed.png");
     this.load.image("player_head",  "assets/images/PlayerHead.png");
     this.load.audio("click",        "assets/audio/click.mp3");
+    if (!this.cache.audio.exists("lobby_music")) {
+      this.load.audio("lobby_music", "assets/audio/lobby_music.mp3");
+    }
+    this.load.video("lobby_bg_video", "assets/videos/lobby_bg.mp4");
   }
 
   create() {
@@ -230,6 +240,14 @@ export default class MainMenuScene extends Phaser.Scene {
     this.input.on("gameobjectdown", () => this.sound.play("click", { volume: 2 }));
 
     this.cameras.main.setBackgroundColor("#1d1f27");
+
+    // ---- Background video ----
+    this._bgVideo = this.add.video(0, 0, "lobby_bg_video")
+      .setOrigin(0.5)
+      .setDepth(-1)
+      .setMute(true);
+    this._bgVideo.play(true); // true = loop
+    this._fitBgVideo();
 
     // ---- Title ----
     this._titleText = this.add
@@ -372,7 +390,12 @@ export default class MainMenuScene extends Phaser.Scene {
     this._settingsBtnBg.on("pointerout", () => this._settingsBtnBg.setFillStyle(SETTINGS_BTN_COLOR, 0.85));
     this._settingsBtnBg.on("pointerdown", () => {
       if (this._settingsOverlay?.isOpen) return;
-      if (!this._settingsOverlay) this._settingsOverlay = new SettingsOverlay(this);
+      if (!this._settingsOverlay) {
+        this._settingsOverlay = new SettingsOverlay(this);
+        this._settingsOverlay.onMusicVolumeChange = (v) => {
+          if (this._lobbyMusic) this._lobbyMusic.setVolume(v);
+        };
+      }
       this._settingsOverlay.open();
     });
 
@@ -554,6 +577,22 @@ export default class MainMenuScene extends Phaser.Scene {
     this._onResize = () => this.layout();
     this.scale.on("resize", this._onResize);
 
+    // ---- Lobby music ----
+    const _settings = loadSettings();
+    this.sound.volume = _settings.volume;
+    if (!this.sound.get("lobby_music")?.isPlaying) {
+      const musicVol = _settings.musicVolume ?? LOBBY_MUSIC_VOLUME;
+      this._lobbyMusic = this.sound.add("lobby_music", { loop: true, volume: musicVol });
+      if (this.sound.locked) {
+        // Browser autoplay policy: play as soon as first user gesture unlocks audio
+        this.sound.once("unlocked", () => {
+          if (!this._lobbyMusic?.isPlaying) this._lobbyMusic?.play();
+        });
+      } else {
+        this._lobbyMusic.play();
+      }
+    }
+
     // ---- Connect to party room ----
     this._connectToParty();
   }
@@ -562,12 +601,23 @@ export default class MainMenuScene extends Phaser.Scene {
   // Layout
   // ============================================================
 
+  _fitBgVideo() {
+    if (!this._bgVideo) return;
+    const w = this.scale.width;
+    const h = this.scale.height;
+    this._bgVideo.setPosition(w / 2, h / 2);
+    // Play at native resolution (scale=1), centered — edges crop to fit the canvas
+    this._bgVideo.setScale(1);
+  }
+
   layout() {
     const w = this.scale ? this.scale.width : 0;
     const h = this.scale ? this.scale.height : 0;
     const cam = this.cameras?.main;
     const cx = cam ? cam.centerX : w * 0.5;
     const cy = cam ? cam.centerY : h * 0.5;
+
+    this._fitBgVideo();
 
     // ---- Party slots (left column) ----
     for (let i = 0; i < SLOT_COUNT; i++) {
@@ -761,7 +811,9 @@ export default class MainMenuScene extends Phaser.Scene {
     try { this._partyRoom?.leave(); } catch (_) {}
     this._partyRoom = null;
 
-    this.scene.start("MatchmakingScene", { username: this._username, skinId: this._skinId });
+    this._fadeOutMusic(() => {
+      this.scene.start("MatchmakingScene", { username: this._username, skinId: this._skinId });
+    });
   }
 
   async _startCustomGame() {
@@ -878,12 +930,14 @@ export default class MainMenuScene extends Phaser.Scene {
       try { await this._partyRoom?.leave(); } catch (_) {}
       this._partyRoom = null;
 
-      this.scene.start("InterimScene", {
-        room:        gameRoom,
-        client:      this._client,
-        username:    this._username,
-        playerCount: playerCount,
-        skinId:      this._skinId,
+      this._fadeOutMusic(() => {
+        this.scene.start("InterimScene", {
+          room:        gameRoom,
+          client:      this._client,
+          username:    this._username,
+          playerCount: playerCount,
+          skinId:      this._skinId,
+        });
       });
     } catch (err) {
       console.error("[MainMenu] Failed to consume reservation:", err);
@@ -1151,6 +1205,23 @@ export default class MainMenuScene extends Phaser.Scene {
   }
 
   // ============================================================
+  // Music helpers
+  // ============================================================
+
+  _fadeOutMusic(onDone, duration = 500) {
+    if (!this._lobbyMusic?.isPlaying) { onDone?.(); return; }
+    this.tweens.add({
+      targets: this._lobbyMusic,
+      volume: 0,
+      duration,
+      onComplete: () => {
+        try { this._lobbyMusic?.stop(); } catch (_) {}
+        onDone?.();
+      },
+    });
+  }
+
+  // ============================================================
   // Cleanup
   // ============================================================
 
@@ -1187,6 +1258,14 @@ export default class MainMenuScene extends Phaser.Scene {
     // Settings overlay
     try { this._settingsOverlay?.destroy(); } catch (_) {}
     this._settingsOverlay = null;
+
+    // Stop lobby music (fade should have already stopped it; this is a safety net)
+    try { this._lobbyMusic?.stop(); } catch (_) {}
+    this._lobbyMusic = null;
+
+    // Stop background video
+    try { this._bgVideo?.stop(); } catch (_) {}
+    this._bgVideo = null;
 
     // Leave party room if we didn't hand off to a game
     if (!this._handedOff) {
