@@ -220,11 +220,14 @@ export default class MainMenuScene extends Phaser.Scene {
     this.load.image("btn_unpushed", "assets/images/StartButtonUnpushed.png");
     this.load.image("btn_pushed",   "assets/images/StartButtonPushed.png");
     this.load.image("player_head",  "assets/images/PlayerHead.png");
+    this.load.audio("click",        "assets/audio/click.mp3");
   }
 
   create() {
     this._starting = false;
     this._handedOff = false;
+
+    this.input.on("gameobjectdown", () => this.sound.play("click", { volume: 2 }));
 
     this.cameras.main.setBackgroundColor("#1d1f27");
 

@@ -59,6 +59,9 @@ function textureKeyFromPath(p) {
   return `tiled_img_${s}`.slice(0, 120);
 }
 
+// All map names in the cycle — used to preload all maps at once.
+const ALL_MAP_NAMES = ["level1", "level2", "level3"];
+
 export default class GameMap {
   static MAP_KEY = "level1";
   static MAP_PATH = "assets/maps/level1.tmj";
@@ -66,14 +69,23 @@ export default class GameMap {
   static TILESET_IMAGE_KEY = "groundTiles";
   static TILESET_IMAGE_PATH = "assets/tiles/ground_tile.png";
 
-  static preload(scene) {
-    // Load the map + tileset. Image-layer textures will be loaded dynamically in create().
-    scene.load.tilemapTiledJSON(GameMap.MAP_KEY, GameMap.MAP_PATH);
+  // Preload a specific map, or all maps if mapName is omitted.
+  // Image-layer textures are loaded dynamically in create().
+  static preload(scene, mapName) {
+    if (mapName) {
+      scene.load.tilemapTiledJSON(mapName, `assets/maps/${mapName}.tmj`);
+    } else {
+      for (const name of ALL_MAP_NAMES) {
+        scene.load.tilemapTiledJSON(name, `assets/maps/${name}.tmj`);
+      }
+    }
     scene.load.image(GameMap.TILESET_IMAGE_KEY, GameMap.TILESET_IMAGE_PATH);
   }
 
-  constructor(scene) {
+  constructor(scene, mapName = "level1") {
     this.scene = scene;
+    this.mapKey  = String(mapName || "level1");
+    this.mapPath = `assets/maps/${this.mapKey}.tmj`;
 
     this.map = null;
     this.worldWpx = 0;
@@ -86,7 +98,7 @@ export default class GameMap {
 
   create() {
     // Build the Phaser tilemap
-    this.map = this.scene.make.tilemap({ key: GameMap.MAP_KEY });
+    this.map = this.scene.make.tilemap({ key: this.mapKey });
 
     const tilesetNameInMap = this.map.tilesets?.[0]?.name;
     const tileset = tilesetNameInMap
@@ -116,7 +128,7 @@ export default class GameMap {
   // Renders tile layers AND imagelayers from the raw Tiled JSON
   // ------------------------------------------------------------
   _renderFromTiledJson(tileset) {
-    const raw = this.scene.cache.tilemap.get(GameMap.MAP_KEY)?.data;
+    const raw = this.scene.cache.tilemap.get(this.mapKey)?.data;
     const ordered = flattenTiledLayers(raw?.layers || []);
 
     // clear previous image layers (in case scene restarts)
@@ -153,7 +165,7 @@ export default class GameMap {
       }
 
       if (layer.type === "imagelayer") {
-        const imgPath = resolveTiledPath(GameMap.MAP_PATH, layer.image);
+        const imgPath = resolveTiledPath(this.mapPath, layer.image);
         const key = textureKeyFromPath(imgPath);
 
         this._imageLayerDefs.push({

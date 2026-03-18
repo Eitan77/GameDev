@@ -41,7 +41,7 @@ const RESPAWN_Y = 600;
 // how long they ragdoll before respawn
 const DEATH_RAGDOLL_SEC = 2.0;
 
-// Try both “run from /server” and “run from repo root”
+// Try both "run from /server" and "run from repo root"
 const MAP_CANDIDATES = [
   "../public/assets/maps/level1.tmj",
   "../public/assets/maps/level1.json",
@@ -50,6 +50,24 @@ const MAP_CANDIDATES = [
   "./public/assets/maps/level1.tmj",
   "./public/assets/maps/level1.json",
 ];
+
+const MAP_CANDIDATES_BY_NAME = {
+  level1: [
+    "../public/assets/maps/level1.tmj",
+    "../../public/assets/maps/level1.tmj",
+    "./public/assets/maps/level1.tmj",
+  ],
+  level2: [
+    "../public/assets/maps/level2.tmj",
+    "../../public/assets/maps/level2.tmj",
+    "./public/assets/maps/level2.tmj",
+  ],
+  level3: [
+    "../public/assets/maps/level3.tmj",
+    "../../public/assets/maps/level3.tmj",
+    "./public/assets/maps/level3.tmj",
+  ],
+};
 
 function dist2(ax, ay, bx, by) {
   const dx = ax - bx;
@@ -183,7 +201,7 @@ function getBodyAabbPx(body) {
 }
 
 export default class LobbyRoom extends Room {
-  onCreate() {
+  onCreate(options) {
     this.setState(new LobbyState());
 
     this._roundStarted = false;
@@ -200,167 +218,31 @@ export default class LobbyRoom extends Room {
     this.world = planck.World({ gravity: planck.Vec2(0, GRAVITY_Y) });
     this.mouseGroundBody = this.world.createBody();
 
-    const loaded = loadTiledMapToPlanck({
-      world: this.world,
-      ppm: PPM,
-      mapFileCandidates: MAP_CANDIDATES,
-      tileLayerName: "Tile Layer 1",
-    });
-
-    this.mapJson = loaded.mapJson;
-
-    // Kill zones: any rect kills unless property Kills=false
-    this.killZoneRects = [];
-    if (this.mapJson) {
-      const killLayerNames = ["KillZones", "DeathZones", "DeathZone", "KillZone"];
-
-      for (const layerName of killLayerNames) {
-        const kzLayer = getObjectLayer(this.mapJson, layerName);
-        const kzObjs = Array.isArray(kzLayer?.objects) ? kzLayer.objects : [];
-
-        for (const o of kzObjs) {
-          const killsProp = getTiledPropValue(o, "Kills");
-          if (killsProp === false) continue;
-
-          const rect = parseTiledRect(o);
-          if (!rect) continue;
-
-          this.killZoneRects.push(rect);
-        }
-      }
-    }
-
-    this.finishLineRects = [];
-    this._finishLineTriggered = false;
-    if (this.mapJson) {
-      const flLayer = getObjectLayer(this.mapJson, "FinishLine");
-      const flObjs = Array.isArray(flLayer?.objects) ? flLayer.objects : [];
-
-      for (const o of flObjs) {
-        // Accept objects that have the FinishLine property set to true,
-        // OR any object in the layer (since the layer is named "FinishLine").
-        const flProp = getTiledPropValue(o, "FinishLine");
-        if (flProp === false) continue; // explicitly disabled
-
-        const rect = parseTiledRect(o);
-        if (!rect) continue;
-
-        this.finishLineRects.push(rect);
-      }
-    }
-
-    this.checkpointSpawnsByBaseId = new Map(); // baseId -> {x,y}
-    this.checkpointTriggers = []; // [{ baseId, x,y,w,h }]
-
-    this.playerCheckpointBaseId = new Map(); // sid -> baseId (ex: "cp02")
-    this.playerRespawnBySid = new Map(); // sid -> {x,y}
-    this.playerInsideCheckpoint = new Map(); // sid -> Set(baseId)
-
-    this.defaultRespawn = { x: RESPAWN_X, y: RESPAWN_Y, baseId: "", order: NaN };
-
-    if (this.mapJson) {
-      const spawnLayer = getObjectLayer(this.mapJson, "PlayerSpawnPoints");
-      const spawnObjs = Array.isArray(spawnLayer?.objects) ? spawnLayer.objects : [];
-
-      for (const o of spawnObjs) {
-        const rawId = getTiledPropValue(o, "id");
-        const baseId = normalizeCheckpointBaseId(rawId);
-        const x = Number(o?.x);
-        const y = Number(o?.y);
-        if (!baseId || !Number.isFinite(x) || !Number.isFinite(y)) continue;
-        this.checkpointSpawnsByBaseId.set(baseId, { x: Math.round(x), y: Math.round(y) });
-      }
-
-      const hitboxLayer = getObjectLayer(this.mapJson, "PlayerSpawnHitboxes");
-      const hitboxObjs = Array.isArray(hitboxLayer?.objects) ? hitboxLayer.objects : [];
-
-      for (const o of hitboxObjs) {
-        const rawId = getTiledPropValue(o, "id");
-        const baseId = normalizeCheckpointBaseId(rawId);
-        if (!baseId) continue;
-
-        const rect = parseTiledRect(o);
-        if (!rect) continue;
-
-        this.checkpointTriggers.push({ baseId, ...rect });
-      }
-
-      if (this.checkpointSpawnsByBaseId.size > 0) {
-        const bases = Array.from(this.checkpointSpawnsByBaseId.keys());
-        bases.sort((a, b) => {
-          const ao = checkpointOrderFromBaseId(a);
-          const bo = checkpointOrderFromBaseId(b);
-          if (Number.isFinite(ao) && Number.isFinite(bo) && ao !== bo) return ao - bo;
-          return String(a).localeCompare(String(b));
-        });
-
-        const baseId = bases[0];
-        const pos = this.checkpointSpawnsByBaseId.get(baseId);
-        if (pos) {
-          this.defaultRespawn = { x: pos.x, y: pos.y, baseId, order: checkpointOrderFromBaseId(baseId) };
-        }
-      }
-    }
-
-    const sniperSpawnPts = [];
-
-    if (this.mapJson) {
-      const puLayer = getObjectLayer(this.mapJson, "PowerUpSpawns");
-      const puObjs = Array.isArray(puLayer?.objects) ? puLayer.objects : [];
-
-      for (const o of puObjs) {
-        const enabled = !!getTiledPropValue(o, "PowerUpSpawn");
-        if (!enabled) continue;
-
-        const x = Number(o?.x);
-        const y = Number(o?.y);
-        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-
-        sniperSpawnPts.push({ x: Math.round(x), y: Math.round(y) });
-      }
-
-      if (sniperSpawnPts.length === 0) {
-        const oldPts = getObjectPoints(this.mapJson, "SniperSpawns");
-        if (Array.isArray(oldPts)) {
-          for (const pt of oldPts) {
-            const x = Number(pt?.x);
-            const y = Number(pt?.y);
-            if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-            sniperSpawnPts.push({ x: Math.round(x), y: Math.round(y) });
-          }
-        }
-      }
-    }
-
-    if (sniperSpawnPts.length === 0) {
-      sniperSpawnPts.push({ x: 900, y: 600 });
-    }
-
-    const GUN_KEYS = Object.keys(GUN_CATALOG);
-    this.gunKeys = GUN_KEYS; // Cache for reuse in power-up respawn
-    this.gunCycleIndices = new Map();
-
-    for (let i = 0; i < sniperSpawnPts.length; i++) {
-      const pt = sniperSpawnPts[i];
-      const puId = `sniper_${i}`;
-
-      const startIndex = i % GUN_KEYS.length;
-      this.gunCycleIndices.set(puId, startIndex);
-
-      const pu = new PowerUpState();
-      pu.type = GUN_KEYS[startIndex];
-      pu.x = pt.x;
-      pu.y = pt.y;
-      pu.active = true;
-
-      this.state.powerUps.set(puId, pu);
-    }
-
+    // Persistent data structures (survive map changes)
     this.playerSims = new Map();
     this.playerInputs = new Map();
     this.powerUpRespawnTimers = new Map();
     this.deathRespawnTimers = new Map();
-    this._emptyInput = {}; // reused when no input received for a player
+    this._emptyInput = {};
+
+    // Per-player checkpoint tracking (populated on join; reset per-player in resetRound)
+    this.playerCheckpointBaseId = new Map();
+    this.playerRespawnBySid = new Map();
+    this.playerInsideCheckpoint = new Map();
+
+    // Map physics body tracking (replaced on map switch)
+    this._mapBodies = [];
+    this._currentMapName = "level1";
+
+    // Gun catalog cache
+    this.gunKeys = Object.keys(GUN_CATALOG);
+    this.gunCycleIndices = new Map();
+
+    // Round finish-line state
+    this._finishLineTriggered = false;
+
+    // Load the initial map
+    this._loadMap(options?.mapName || "level1");
 
     this.onMessage("input", (client, msg) => {
       const raw = msg || {};
@@ -398,6 +280,161 @@ export default class LobbyRoom extends Room {
 
     const loopMs = Math.max(1, Math.round(1000 / SIM_LOOP_HZ));
     this.setSimulationInterval(() => this.simLoop(), loopMs);
+  }
+
+  // ── Map loading ──────────────────────────────────────────────
+  // Destroys old map physics bodies, loads a new map, and rebuilds
+  // all derived data (kill zones, checkpoints, spawn points, power-ups).
+  // Safe to call between rounds while player sims are still alive.
+  _loadMap(mapName) {
+    const key = String(mapName || "level1");
+    const candidates = MAP_CANDIDATES_BY_NAME[key] || MAP_CANDIDATES_BY_NAME.level1;
+
+    // Cancel pending power-up respawn timers
+    for (const [, t] of this.powerUpRespawnTimers.entries()) clearTimeout(t);
+    this.powerUpRespawnTimers.clear();
+
+    // Clear power-up state (clients re-sync on next GameScene load)
+    for (const puId of [...(this.state?.powerUps?.keys() ?? [])]) {
+      this.state.powerUps.delete(puId);
+    }
+    this.gunCycleIndices.clear();
+
+    // Destroy old map static bodies
+    for (const body of this._mapBodies) {
+      try { this.world.destroyBody(body); } catch (_) {}
+    }
+    this._mapBodies = [];
+
+    // Snapshot bodies before loading so we can identify new ones
+    const bodiesBefore = new Set();
+    for (let b = this.world.getBodyList(); b; b = b.getNext()) bodiesBefore.add(b);
+
+    // Load new map into physics world
+    const loaded = loadTiledMapToPlanck({
+      world: this.world,
+      ppm: PPM,
+      mapFileCandidates: candidates,
+      tileLayerName: "Tile Layer 1",
+    });
+    this.mapJson = loaded.mapJson;
+
+    // Record bodies added by this map
+    for (let b = this.world.getBodyList(); b; b = b.getNext()) {
+      if (!bodiesBefore.has(b)) this._mapBodies.push(b);
+    }
+
+    // ── Kill zones ──
+    this.killZoneRects = [];
+    if (this.mapJson) {
+      const killLayerNames = ["KillZones", "DeathZones", "DeathZone", "KillZone"];
+      for (const layerName of killLayerNames) {
+        const kzLayer = getObjectLayer(this.mapJson, layerName);
+        const kzObjs = Array.isArray(kzLayer?.objects) ? kzLayer.objects : [];
+        for (const o of kzObjs) {
+          if (getTiledPropValue(o, "Kills") === false) continue;
+          const rect = parseTiledRect(o);
+          if (rect) this.killZoneRects.push(rect);
+        }
+      }
+    }
+
+    // ── Finish line ──
+    this.finishLineRects = [];
+    if (this.mapJson) {
+      const flLayer = getObjectLayer(this.mapJson, "FinishLine");
+      const flObjs = Array.isArray(flLayer?.objects) ? flLayer.objects : [];
+      for (const o of flObjs) {
+        if (getTiledPropValue(o, "FinishLine") === false) continue;
+        const rect = parseTiledRect(o);
+        if (rect) this.finishLineRects.push(rect);
+      }
+    }
+
+    // ── Checkpoint spawn points & triggers ──
+    this.checkpointSpawnsByBaseId = new Map();
+    this.checkpointTriggers = [];
+    this.defaultRespawn = { x: RESPAWN_X, y: RESPAWN_Y, baseId: "", order: NaN };
+
+    if (this.mapJson) {
+      const spawnLayer = getObjectLayer(this.mapJson, "PlayerSpawnPoints");
+      const spawnObjs = Array.isArray(spawnLayer?.objects) ? spawnLayer.objects : [];
+      for (const o of spawnObjs) {
+        const rawId = getTiledPropValue(o, "id");
+        const baseId = normalizeCheckpointBaseId(rawId);
+        const x = Number(o?.x);
+        const y = Number(o?.y);
+        if (!baseId || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+        this.checkpointSpawnsByBaseId.set(baseId, { x: Math.round(x), y: Math.round(y) });
+      }
+
+      const hitboxLayer = getObjectLayer(this.mapJson, "PlayerSpawnHitboxes");
+      const hitboxObjs = Array.isArray(hitboxLayer?.objects) ? hitboxLayer.objects : [];
+      for (const o of hitboxObjs) {
+        const rawId = getTiledPropValue(o, "id");
+        const baseId = normalizeCheckpointBaseId(rawId);
+        if (!baseId) continue;
+        const rect = parseTiledRect(o);
+        if (rect) this.checkpointTriggers.push({ baseId, ...rect });
+      }
+
+      if (this.checkpointSpawnsByBaseId.size > 0) {
+        const bases = Array.from(this.checkpointSpawnsByBaseId.keys());
+        bases.sort((a, b) => {
+          const ao = checkpointOrderFromBaseId(a);
+          const bo = checkpointOrderFromBaseId(b);
+          if (Number.isFinite(ao) && Number.isFinite(bo) && ao !== bo) return ao - bo;
+          return String(a).localeCompare(String(b));
+        });
+        const baseId = bases[0];
+        const pos = this.checkpointSpawnsByBaseId.get(baseId);
+        if (pos) {
+          this.defaultRespawn = { x: pos.x, y: pos.y, baseId, order: checkpointOrderFromBaseId(baseId) };
+        }
+      }
+    }
+
+    // ── Power-up spawn points ──
+    const sniperSpawnPts = [];
+    if (this.mapJson) {
+      const puLayer = getObjectLayer(this.mapJson, "PowerUpSpawns");
+      const puObjs = Array.isArray(puLayer?.objects) ? puLayer.objects : [];
+      for (const o of puObjs) {
+        if (!getTiledPropValue(o, "PowerUpSpawn")) continue;
+        const x = Number(o?.x);
+        const y = Number(o?.y);
+        if (Number.isFinite(x) && Number.isFinite(y)) sniperSpawnPts.push({ x: Math.round(x), y: Math.round(y) });
+      }
+
+      if (sniperSpawnPts.length === 0) {
+        const oldPts = getObjectPoints(this.mapJson, "SniperSpawns");
+        if (Array.isArray(oldPts)) {
+          for (const pt of oldPts) {
+            const x = Number(pt?.x);
+            const y = Number(pt?.y);
+            if (Number.isFinite(x) && Number.isFinite(y)) sniperSpawnPts.push({ x: Math.round(x), y: Math.round(y) });
+          }
+        }
+      }
+    }
+    if (sniperSpawnPts.length === 0) sniperSpawnPts.push({ x: 900, y: 600 });
+
+    // Recreate power-up state entries
+    for (let i = 0; i < sniperSpawnPts.length; i++) {
+      const pt = sniperSpawnPts[i];
+      const puId = `sniper_${i}`;
+      const startIndex = i % this.gunKeys.length;
+      this.gunCycleIndices.set(puId, startIndex);
+
+      const pu = new PowerUpState();
+      pu.type = this.gunKeys[startIndex];
+      pu.x = pt.x;
+      pu.y = pt.y;
+      pu.active = true;
+      this.state.powerUps.set(puId, pu);
+    }
+
+    this._currentMapName = key;
   }
 
   onJoin(client) {

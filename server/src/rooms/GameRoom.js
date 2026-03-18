@@ -9,13 +9,37 @@ const INTERIM_MIN_MS   = 3_000;
 // Safety valve: after this, the gate opens regardless of who hasn't signalled.
 const INTERIM_FORCE_MS = 3_000;
 
+// --------------------
+// TUNE THIS: wins required to end the game
+// --------------------
+const POINTS_TO_WIN = 3;
+
+// --------------------
+// Map cycle — order is always level1 → level2 → level3 → level1 …
+// The starting position is chosen randomly each game.
+// --------------------
+const MAP_CYCLE = ["level1", "level2", "level3"];
+
 export default class GameRoom extends LobbyRoom {
 
   // ── Lifecycle ────────────────────────────────────────────────────
 
+  // Advance to the next map in the cycle and return its name.
+  _advanceToNextMap() {
+    this._mapIdx = (this._mapIdx + 1) % MAP_CYCLE.length;
+    this._currentMapName = MAP_CYCLE[this._mapIdx];
+    return this._currentMapName;
+  }
+
   onCreate(options) {
     this.maxClients = 4;
-    super.onCreate(options);
+
+    // Pick a random starting position in the map cycle
+    this._mapIdx = Math.floor(Math.random() * MAP_CYCLE.length);
+    this._currentMapName = MAP_CYCLE[this._mapIdx];
+    console.log(`[GameRoom] Starting map: ${this._currentMapName} (idx ${this._mapIdx})`);
+
+    super.onCreate({ ...options, mapName: this._currentMapName });
 
     this._expectedPlayers = Math.max(1, Number(options?.matchSize) || this.maxClients || 4);
     this._deferRoundStart = true;  // prevents LobbyRoom.onJoin auto-starting the timer
@@ -204,8 +228,16 @@ export default class GameRoom extends LobbyRoom {
     this._interimEnded      = true;
     this._interimReadySet   = null;
 
-    // All clients leave InterimScene simultaneously
-    this.broadcast("interimEnd", {});
+    // Determine which map clients should load.
+    // For subsequent rounds, advance the cycle BEFORE broadcasting so the
+    // message already carries the incoming map name.
+    let nextMapName = this._currentMapName;
+    if (!this._isFirstRound && !this._isGameOver) {
+      nextMapName = this._advanceToNextMap();
+    }
+
+    // All clients leave InterimScene simultaneously; include the upcoming map.
+    this.broadcast("interimEnd", { mapName: nextMapName });
 
     if (this._isFirstRound) {
       // Start the round timer for the very first time
@@ -214,8 +246,13 @@ export default class GameRoom extends LobbyRoom {
       this._roundStarted          = true;
       this._roundEndMs            = Date.now() + dur * 1000;
       this.state.roundTimeLeftSec = dur;
+    } else if (this._isGameOver) {
+      // Game over: reset all points so the room is clean if reused, don't start a new round
+      this._isGameOver = false;
+      this.state.players.forEach((st) => { st.points = 0; });
     } else {
-      // Subsequent rounds: reset physics, respawn players, restart timer
+      // Load new map physics, then reset physics, respawn players, restart timer
+      try { this._loadMap(nextMapName); } catch (_) {}
       try { this.resetRound(); } catch (_) {}
     }
   }
@@ -247,7 +284,10 @@ export default class GameRoom extends LobbyRoom {
     });
 
     const winnerName = winnerState?.name || "Player";
-    this.broadcast("roundOver", { winnerId, winnerName, scores });
+    const isGameOver = (Number(winnerState?.points) || 0) >= POINTS_TO_WIN;
+    if (isGameOver) this._isGameOver = true;
+
+    this.broadcast("roundOver", { winnerId, winnerName, scores, gameOver: isGameOver });
 
     // 500ms gives clients time to receive "roundOver", start their InterimScene,
     // and register listeners before the gate opens. Any "interimReady" signals

@@ -46,7 +46,7 @@ const MOUSE_DRAG_DAMPING_RATIO = 0.9;
 
 const GROUND_RAY_X_OFFSETS_PX = [-FOOT_HALF_W_PX, 0, FOOT_HALF_W_PX];
 const GROUND_RAY_START_INSET_PX = 2;
-const GROUND_RAY_LEN_PX = 10;
+const GROUND_RAY_LEN_PX = 16;
 const GROUND_GRACE_TIME_SEC = 0.06;
 
 // Side rays: fire horizontally left and right from the body midpoint.

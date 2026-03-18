@@ -246,6 +246,7 @@ export default class GameScene extends Phaser.Scene {
       .slice(0, 16);
     this._username = name || "Player";
     this._skinId = data?.skinId || "default";
+    this._mapName = data?.mapName || "level1";
     this._cleanupRegistered = false;
   }
 
@@ -256,7 +257,7 @@ export default class GameScene extends Phaser.Scene {
     // checkpoint marker image
     this.load.image("checkpoint", "assets/images/checkpoint.png");
 
-    GameMap.preload(this);
+    GameMap.preload(this, this._mapName);
     preloadGuns(this);
 
     this.load.on("loaderror", (file) => {
@@ -336,7 +337,7 @@ export default class GameScene extends Phaser.Scene {
     const settings = loadSettings();
     this.sound.volume = settings.volume;
 
-    this.map = new GameMap(this).create();
+    this.map = new GameMap(this, this._mapName).create();
 
     // Covers the world while we wait for the local player + camera to settle.
     // Removed (with a short fade) once the local player is confirmed live.
@@ -571,6 +572,8 @@ export default class GameScene extends Phaser.Scene {
     this.room.onMessage("roundOver", (msg) => {
       const winnerName = String(msg?.winnerName || "Player");
       const scores = Array.isArray(msg?.scores) ? msg.scores : [];
+      const gameOver = !!msg?.gameOver;
+      const winnerId = msg?.winnerId || null;
 
       // Stop sending inputs
       this.dragActive = false;
@@ -590,7 +593,9 @@ export default class GameScene extends Phaser.Scene {
         playerCount,
         scores,
         winnerName,
+        winnerId,
         isRoundOver: true,
+        gameOver,
         skinId: this._skinId,
       });
     });

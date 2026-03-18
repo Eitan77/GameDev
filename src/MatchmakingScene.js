@@ -55,6 +55,8 @@ export default class MatchmakingScene extends Phaser.Scene {
     this._starting = false;
     this._handedOff = false;
 
+    this.input.on("gameobjectdown", () => this.sound.play("click", { volume: 2 }));
+
     this.cameras.main.setBackgroundColor("#12131a");
 
     this.titleText = this.add

@@ -62,6 +62,20 @@ const NAME_STROKE_COLOR  = "#000000";
 const NAME_STROKE_WIDTH  = 10;
 const NAME_DEPTH         = 15;
 
+// ── Crown (game-over winner indicator) ──
+const CROWN_OFFSET_Y_PX  = -(FRAME_INNER_H / 2);   // above the head frame
+const CROWN_SCALE        = 1.0;
+const CROWN_DEPTH        = 16;
+
+// ── Return to Lobby button (game-over screen) ──
+const LOBBY_BTN_Y_PX     = 730;   // near bottom of 800px canvas
+const LOBBY_BTN_W        = 420;
+const LOBBY_BTN_H        = 72;
+const LOBBY_BTN_COLOR    = 0x1a1a2e;
+const LOBBY_BTN_HOVER    = 0x2a2a4e;
+const LOBBY_BTN_BORDER   = 0xffd700;
+const LOBBY_BTN_FONT_SZ  = 38;
+
 export default class InterimScene extends Phaser.Scene {
   constructor() {
     super("InterimScene");
@@ -80,10 +94,13 @@ export default class InterimScene extends Phaser.Scene {
   }
 
   init(data) {
-    this._room     = data?.room     ?? null;
-    this._client   = data?.client   ?? null;
-    this._username = data?.username ?? "Player";
-    this._skinId   = data?.skinId   ?? "default";
+    this._room      = data?.room     ?? null;
+    this._client    = data?.client   ?? null;
+    this._username  = data?.username ?? "Player";
+    this._skinId    = data?.skinId   ?? "default";
+    this._gameOver  = data?.gameOver ?? false;
+    this._winnerId  = data?.winnerId ?? null;
+    this._nextMapName = "level1"; // updated when interimEnd arrives
 
     // ── Reset all transition flags here (before preload) ──
     this._assetsReady        = false;
@@ -123,6 +140,8 @@ export default class InterimScene extends Phaser.Scene {
     if (this._room) {
       this._room.onMessage("interimEnd", (msg) => {
         this._interimEndReceived = true;
+        if (msg?.mapName) this._nextMapName = msg.mapName;
+        console.log("[InterimScene] interimEnd received, next map:", this._nextMapName);
         if (msg?.lateJoin) this._skipLocalMin = true;
         this._tryTransition();
       });
@@ -155,6 +174,7 @@ export default class InterimScene extends Phaser.Scene {
     // Interim-screen assets
     this.load.image("interim_bg",  "assets/images/InterimScreen.png");
     this.load.image("player_head", "assets/images/PlayerHead.png");
+    this.load.image("crown",       "assets/images/crown.png");
 
     // Score digit sprites (same keys as UIScene timer digits)
     for (let d = 0; d <= 9; d++) {
@@ -168,7 +188,7 @@ export default class InterimScene extends Phaser.Scene {
     this.load.image("arm",        "assets/images/arm.png");
     this.load.image("checkpoint", "assets/images/checkpoint.png");
 
-    GameMap.preload(this);
+    GameMap.preload(this); // no mapName arg = preload all maps
     preloadGuns(this);
 
     this.load.on("complete", () => {
@@ -193,6 +213,8 @@ export default class InterimScene extends Phaser.Scene {
   create() {
     const W = this.scale.width;   // 1600
     const H = this.scale.height;  // 800
+
+    this.input.on("gameobjectdown", () => this.sound.play("click", { volume: 2 }));
 
     // ── Resolve player names now (create() runs after state is settled) ──
     // _scores may have been built in init() before setName was reflected back
@@ -249,6 +271,39 @@ export default class InterimScene extends Phaser.Scene {
       // ── Score for this slot ──
       // Default to 0 if we have no scores yet (first pre-game interim).
       this._drawScoreDigits(frame.x, frame.y + SCORE_BELOW_FRAME_PX, points);
+
+      // ── Crown: shown over the winner on the game-over screen ──
+      if (this._gameOver && entry && entry.sid === this._winnerId) {
+        if (this.textures.exists("crown")) {
+          const crown = this.add.image(frame.x, frame.y + CROWN_OFFSET_Y_PX, "crown");
+          crown.setScale(CROWN_SCALE).setDepth(CROWN_DEPTH);
+        }
+      }
+    }
+
+    // ── Return to Lobby button (game-over only) ──
+    if (this._gameOver) {
+      const cx = W / 2;
+      const bg = this.add.rectangle(cx, LOBBY_BTN_Y_PX, LOBBY_BTN_W, LOBBY_BTN_H, LOBBY_BTN_COLOR)
+        .setDepth(20)
+        .setStrokeStyle(3, LOBBY_BTN_BORDER);
+
+      const label = this.add.text(cx, LOBBY_BTN_Y_PX, "RETURN TO LOBBY", {
+        fontFamily: NAME_FONT_FAMILY,
+        fontSize:   `${LOBBY_BTN_FONT_SZ}px`,
+        color:      "#ffd700",
+        stroke:     "#000000",
+        strokeThickness: 6,
+      }).setOrigin(0.5, 0.5).setDepth(21);
+
+      bg.setInteractive({ useHandCursor: true });
+      bg.on("pointerover",  () => bg.setFillStyle(LOBBY_BTN_HOVER));
+      bg.on("pointerout",   () => bg.setFillStyle(LOBBY_BTN_COLOR));
+      bg.on("pointerdown",  () => {
+        bg.removeAllListeners();
+        try { this._room?.leave(); } catch (_) {}
+        this.scene.start("MainMenuScene");
+      });
     }
 
     // ── Entrance curtain: starts covering the screen, sweeps down to reveal ──
@@ -385,6 +440,8 @@ export default class InterimScene extends Phaser.Scene {
 
   // -------------------------------------------------------------------
   _tryTransition() {
+    // Game-over screen: player stays until they click "Return to Lobby".
+    if (this._gameOver) return;
     if (!this._assetsReady || !this._interimEndReceived) return;
     if (this._transitioning) return;
 
@@ -432,6 +489,7 @@ export default class InterimScene extends Phaser.Scene {
           client:   this._client,
           username: this._username,
           skinId:   this._skinId,
+          mapName:  this._nextMapName || "level1",
         });
       },
     });

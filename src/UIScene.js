@@ -26,6 +26,33 @@ const HEALTH_SEG_COUNT = 40;
 // Scales the WHOLE health bar (background + markers).
 const HEALTH_UI_SCALE = 0.5;
 
+// ------------------------------
+// AMMO BAR TWEAK KNOBS
+// ------------------------------
+// Fixed width of the ammo cell box (right edge aligns with health bar right edge).
+const AMMO_BOX_W_PX = 150;
+// Height of the ammo box — matches the health bar display height (149 * 0.5).
+const AMMO_BOX_H_PX = 45;
+// Gap between the top of the health bar and the bottom of the ammo bar.
+const AMMO_BOX_ABOVE_GAP_PX = 10;
+// Inner padding inside the ammo box.
+const AMMO_BOX_PADDING_PX = 5;
+// Gap in pixels between individual ammo cells.
+const AMMO_CELL_GAP_PX = 1;
+// Gap between the right edge of the gun icon and the left edge of the ammo box.
+const AMMO_GUN_ICON_GAP_PX = 10;
+// Max display width of the gun icon (prevents it going off-screen for wide pickup images).
+// Available space left of the ammo box: ~HEALTH_UI_BL_X + (healthBgW*scale - AMMO_BOX_W_PX) - gap
+const AMMO_GUN_ICON_MAX_W_PX = 140;
+
+const AMMO_BOX_BG_COLOR    = 0x111111;
+const AMMO_BOX_BG_ALPHA    = 0.75;
+const AMMO_BOX_BORDER_COLOR = 0xffffff;
+const AMMO_BOX_BORDER_ALPHA = 0.8;
+const AMMO_CELL_FULL_COLOR  = 0x00ff44;
+const AMMO_CELL_EMPTY_COLOR = 0x2a2a2a;
+const AMMO_BAR_DEPTH        = 101;
+
 // Bottom-left corner in screen pixels.
 // Increase X to move right. Increase Y to move UP.
 const HEALTH_UI_BL_X = 24;
@@ -213,6 +240,14 @@ export default class UIScene extends Phaser.Scene {
     // Killfeed
     // Each entry: { container, w (scaled px), addedAt, fading }
     this._kfEntries = [];
+
+    // Ammo bar HUD
+    this._ammoGfx     = null;  // Graphics: box border + ammo cells
+    this._ammoGunIcon = null;  // Image: gun pickup icon to the left of the box
+    this._lastAmmoGunId  = null;
+    this._lastAmmoCount  = -1;
+    this._lastAmmoW      = -1;
+    this._lastAmmoH      = -1;
   }
 
   init(data) {
@@ -267,6 +302,7 @@ export default class UIScene extends Phaser.Scene {
     this.cameras.main.setRoundPixels(true);
 
     this.createHealthBar();
+    this.createAmmoBar();
     this.createTimer();
     this.createLeaderboard();
     this._createHudButtons();
@@ -330,6 +366,15 @@ export default class UIScene extends Phaser.Scene {
       try { entry.container?.destroy(true); } catch (_) {}
     }
     this._kfEntries = [];
+
+    try { this._ammoGfx?.destroy(); } catch (_) {}
+    try { this._ammoGunIcon?.destroy(); } catch (_) {}
+    this._ammoGfx     = null;
+    this._ammoGunIcon = null;
+    this._lastAmmoGunId = null;
+    this._lastAmmoCount = -1;
+    this._lastAmmoW     = -1;
+    this._lastAmmoH     = -1;
   }
 
   // -----------------------------
@@ -445,6 +490,123 @@ export default class UIScene extends Phaser.Scene {
     this.healthBar = this.add.container(0, 0, [this.healthBg, ...this.healthMarkers]);
     this.healthBar.setScale(HEALTH_UI_SCALE);
     this.healthBar.setVisible(false);
+  }
+
+  createAmmoBar() {
+    this._ammoGfx = this.add.graphics();
+    this._ammoGfx.setDepth(AMMO_BAR_DEPTH);
+    this._ammoGfx.setVisible(false);
+    // _ammoGunIcon is created lazily when the first gun is equipped
+  }
+
+  // Redraws the ammo bar to reflect current gun/ammo state.
+  // Called from ui() every frame; dirty-checks to avoid redundant redraws.
+  _updateAmmoBar(w, h, localPlayer) {
+    const gunId = localPlayer?._gunId;
+    const ammo  = Number(localPlayer?._ammo) || 0;
+    const isDead = !!localPlayer?.isDead;
+
+    const gunDef = (gunId && !isDead) ? GUN_CATALOG[gunId] : null;
+
+    if (!gunDef) {
+      // No gun or dead — hide everything and reset dirty state
+      if (this._ammoGfx) this._ammoGfx.setVisible(false);
+      if (this._ammoGunIcon) this._ammoGunIcon.setVisible(false);
+      this._lastAmmoGunId = null;
+      this._lastAmmoCount = -1;
+      this._lastAmmoW = -1;
+      this._lastAmmoH = -1;
+      return;
+    }
+
+    // Skip redraw if nothing relevant changed
+    if (
+      gunId === this._lastAmmoGunId &&
+      ammo  === this._lastAmmoCount &&
+      w     === this._lastAmmoW     &&
+      h     === this._lastAmmoH
+    ) return;
+
+    this._lastAmmoGunId = gunId;
+    this._lastAmmoCount = ammo;
+    this._lastAmmoW = w;
+    this._lastAmmoH = h;
+
+    const maxAmmo = gunDef.ammo;
+
+    // ---- Compute position ----
+    // Right edge of ammo box = right edge of health bar
+    const healthBgW = this.healthBg?.width  ?? 587;
+    const healthBgH = this.healthBg?.height ?? 149;
+    const boxRight  = HEALTH_UI_BL_X + healthBgW * HEALTH_UI_SCALE;
+    const boxLeft   = boxRight - AMMO_BOX_W_PX;
+    const boxBottom = h - HEALTH_UI_BL_Y - healthBgH * HEALTH_UI_SCALE - AMMO_BOX_ABOVE_GAP_PX;
+    const boxTop    = boxBottom - AMMO_BOX_H_PX;
+
+    // ---- Draw ammo box ----
+    this._ammoGfx.clear();
+
+    // Background
+    this._ammoGfx.fillStyle(AMMO_BOX_BG_COLOR, AMMO_BOX_BG_ALPHA);
+    this._ammoGfx.fillRect(boxLeft, boxTop, AMMO_BOX_W_PX, AMMO_BOX_H_PX);
+
+    // Border
+    this._ammoGfx.lineStyle(1, AMMO_BOX_BORDER_COLOR, AMMO_BOX_BORDER_ALPHA);
+    this._ammoGfx.strokeRect(boxLeft, boxTop, AMMO_BOX_W_PX, AMMO_BOX_H_PX);
+
+    // Ammo cells inside the box
+    const innerLeft = boxLeft + AMMO_BOX_PADDING_PX;
+    const innerTop  = boxTop  + AMMO_BOX_PADDING_PX;
+    const innerW    = AMMO_BOX_W_PX - 2 * AMMO_BOX_PADDING_PX;
+    const innerH    = AMMO_BOX_H_PX - 2 * AMMO_BOX_PADDING_PX;
+
+    // Cell width fills the inner area: N cells + (N-1) gaps
+    const totalGaps = (maxAmmo - 1) * AMMO_CELL_GAP_PX;
+    const cellW = (innerW - totalGaps) / maxAmmo;
+
+    for (let i = 0; i < maxAmmo; i++) {
+      const isFull = i < ammo;
+      this._ammoGfx.fillStyle(isFull ? AMMO_CELL_FULL_COLOR : AMMO_CELL_EMPTY_COLOR, 1);
+      const cx = innerLeft + i * (cellW + AMMO_CELL_GAP_PX);
+      this._ammoGfx.fillRect(Math.round(cx), innerTop, Math.max(1, Math.floor(cellW)), innerH);
+    }
+
+    this._ammoGfx.setVisible(true);
+
+    // ---- Gun icon ----
+    const pickupKey = gunDef.pickupKey;
+    if (this.textures.exists(pickupKey)) {
+      // Create image lazily on first use
+      if (!this._ammoGunIcon) {
+        this._ammoGunIcon = this.add.image(0, 0, pickupKey);
+        this._ammoGunIcon.setDepth(AMMO_BAR_DEPTH);
+      }
+
+      // Update texture only when gun changes
+      if (gunId !== this._ammoGunIcon._lastGunId) {
+        this._ammoGunIcon.setTexture(pickupKey);
+        this._ammoGunIcon._lastGunId = gunId;
+      }
+
+      // Scale to box height, then constrain width so it never goes off-screen.
+      // Gun pickup images are landscape (e.g. 160×48), so a pure height scale
+      // would make them too wide — we cap at AMMO_GUN_ICON_MAX_W_PX.
+      const nativeW  = gunDef.pickupWpx ?? 160;
+      const nativeH  = gunDef.pickupHpx ?? 48;
+      let dispH = AMMO_BOX_H_PX;
+      let dispW = nativeW * (dispH / nativeH);
+      if (dispW > AMMO_GUN_ICON_MAX_W_PX) {
+        dispW = AMMO_GUN_ICON_MAX_W_PX;
+        dispH = nativeH * (dispW / nativeW);
+      }
+
+      this._ammoGunIcon.setDisplaySize(dispW, dispH);
+      // Origin at right-center so it sits flush against the ammo box left edge
+      this._ammoGunIcon.setOrigin(1, 0.5);
+      this._ammoGunIcon.x = boxLeft - AMMO_GUN_ICON_GAP_PX;
+      this._ammoGunIcon.y = boxTop + AMMO_BOX_H_PX / 2;
+      this._ammoGunIcon.setVisible(true);
+    }
   }
 
   createTimer() {
@@ -735,6 +897,8 @@ export default class UIScene extends Phaser.Scene {
     if (force || changed || (this.timerContainer && this.timerContainer.y === 0)) {
       this.layoutTimer(w);
     }
+
+    this._updateAmmoBar(w, h, localPlayer);
 
     this._updateLeaderboard(gameScene, w, h);
 
