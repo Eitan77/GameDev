@@ -856,8 +856,9 @@ export default class MainMenuScene extends Phaser.Scene {
     this._statusText?.setText("Joining party...");
 
     try {
-      // Look up the room ID via REST
-      const resp = await fetch(`${COLYSEUS_URL}/party/lookup?code=${code}`);
+      // Look up the room ID via REST (convert wss:// → https:// for fetch)
+      const httpBase = COLYSEUS_URL.replace(/^wss:/, "https:").replace(/^ws:/, "http:");
+      const resp = await fetch(`${httpBase}/party/lookup?code=${code}`);
       if (!resp.ok) {
         const data = await resp.json().catch(() => ({}));
         this._statusText?.setText(data.error || "Party not found");
