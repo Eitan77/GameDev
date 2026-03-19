@@ -16,7 +16,7 @@ import { SettingsOverlay, loadSettings } from "./settings.js";
 // - Cleanup input listeners on shutdown to avoid duplicates
 // ============================================================
 
-const COLYSEUS_URL = `${window.location.protocol}//${window.location.hostname}:2567`;
+const COLYSEUS_URL = import.meta.env.VITE_SERVER_URL || `${window.location.protocol}//${window.location.hostname}:2567`;
 
 // ============================================================
 // UI TUNING CONSTANTS — adjust these to reposition / resize

@@ -1,7 +1,7 @@
 import Phaser from "phaser";
 import { Client } from "@colyseus/sdk";
 
-const COLYSEUS_URL = `${window.location.protocol}//${window.location.hostname}:2567`;
+const COLYSEUS_URL = import.meta.env.VITE_SERVER_URL || `${window.location.protocol}//${window.location.hostname}:2567`;
 
 const MATCHMAKING_ROOM = "matchmaking";
 

@@ -11,8 +11,8 @@ import { preloadGuns } from "./gunCatalog.js";
 import VisibilityManager from "./VisibilityManager.js";
 import { loadSettings } from "./settings.js";
 
-// connects to same host (works on LAN)
-const COLYSEUS_URL = `${window.location.protocol}//${window.location.hostname}:2567`;
+// connects to same host (works on LAN); VITE_SERVER_URL overrides for production
+const COLYSEUS_URL = import.meta.env.VITE_SERVER_URL || `${window.location.protocol}//${window.location.hostname}:2567`;
 const ROOM_NAME = "lobby";
 
 export const NET_SEND_HZ = 60;
