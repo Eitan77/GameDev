@@ -25,35 +25,56 @@ const COLYSEUS_URL = import.meta.env.VITE_SERVER_URL || `${window.location.proto
 // ---- Music ----
 const LOBBY_MUSIC_VOLUME  = 0.4;    // default; overridden by saved settings
 
-// ---- Title ----
+// ---- Title (top-center) ----
 const TITLE_FONT_SIZE     = "60px";
-const TITLE_OFFSET_Y      = -280;       // relative to center Y
+const TITLE_Y             = 60;          // absolute Y from top
 
-// ---- Username input ----
-const NAME_LABEL_OFFSET_Y = -180;       // relative to center Y
-const NAME_INPUT_W        = 460;
-const NAME_INPUT_H        = 86;
-const NAME_INPUT_OFFSET_Y = -105;       // relative to center Y
-const NAME_FONT_SIZE      = "40px";
-const NAME_LABEL_FONT_SIZE = "48px";
+// ---- Username input (bottom-center) ----
+const NAME_INPUT_W        = 400;
+const NAME_INPUT_H        = 60;
+const NAME_INPUT_FROM_BOTTOM = 80;       // distance from bottom edge
+const NAME_FONT_SIZE      = "28px";
+const NAME_LABEL_FONT_SIZE = "16px";
+const NAME_LABEL_GAP      = 30;          // gap above input box
 
-// ---- START button ----
-const START_BTN_SCALE     = 1;
-const START_BTN_OFFSET_Y  = 30;        // relative to center Y
+// ---- Right-side buttons (Play, Shop, Skins) ----
+const RIGHT_BTN_W         = 240;
+const RIGHT_BTN_H         = 70;
+const RIGHT_BTN_GAP       = 20;
+const RIGHT_BTN_MARGIN    = 160;         // center X offset from right edge
+const RIGHT_BTN_FONT_SIZE = "36px";
+const RIGHT_BTN_STROKE_W  = 3;
 
-// ---- CUSTOM button ----
-const CUSTOM_BTN_W        = 380;
-const CUSTOM_BTN_H        = 110;
-const CUSTOM_BTN_OFFSET_Y = 200;         // relative to center Y
-const CUSTOM_FONT_SIZE    = "60px";
-const CUSTOM_BG_COLOR     = 0x0d2e5e;   // dark blue
-const CUSTOM_BG_HOVER     = 0x1a4a8a;   // lighter blue on hover
-const CUSTOM_TEXT_COLOR   = "#a0cfff";   // light blue text
-const CUSTOM_STROKE_COLOR = 0x000000;
-const CUSTOM_STROKE_WIDTH = 4;
+const PLAY_BG_COLOR       = 0x2a6b2a;
+const PLAY_BG_HOVER       = 0x3a8f3a;
+const PLAY_TEXT_COLOR      = "#e0ffe0";
+
+const SHOP_BG_COLOR       = 0x4a3a1a;
+const SHOP_BG_HOVER       = 0x6a5a2a;
+const SHOP_TEXT_COLOR      = "#ffe0aa";
+
+// ---- Skin preview (center of screen) ----
+const SKIN_PREVIEW_BODY_SCALE = 2.0;
+const SKIN_PREVIEW_ARM_SCALE  = 1.8;
+const SKIN_PREVIEW_ARM_OFFSET_X = 30;
+const SKIN_PREVIEW_ARM_OFFSET_Y = 20;
+
+// ---- Play mode submenu overlay ----
+const PLAY_MENU_BTN_W     = 360;
+const PLAY_MENU_BTN_H     = 100;
+const PLAY_MENU_GAP       = 30;
+const PLAY_MENU_FONT_SIZE = "40px";
+const PLAY_MENU_BG_ALPHA  = 0.75;
+
+const MATCHMAKING_BG      = 0x2a6b2a;
+const MATCHMAKING_HOVER   = 0x3a8f3a;
+const MATCHMAKING_TEXT     = "#e0ffe0";
+
+const CUSTOM_BG_COLOR     = 0x0d2e5e;
+const CUSTOM_BG_HOVER     = 0x1a4a8a;
+const CUSTOM_TEXT_COLOR    = "#a0cfff";
 
 // ---- Status text ----
-const STATUS_OFFSET_Y     = 150;        // relative to center Y
 const STATUS_FONT_SIZE    = "18px";
 
 // ---- Party slot boxes (left column) ----
@@ -110,14 +131,10 @@ const LEAVE_BG_HOVER      = 0x4a2020;
 const LEAVE_STROKE_COLOR  = 0x8b0000;
 const LEAVE_TEXT_COLOR     = "#ff6666";
 
-// ---- SKINS button ----
-const SKINS_BTN_W         = 200;
-const SKINS_BTN_H         = 50;
-const SKINS_BTN_OFFSET_Y  = 310;          // relative to center Y
+// ---- SKINS button (right side, uses RIGHT_BTN_* for size) ----
 const SKINS_BG_COLOR      = 0x2e1a4a;
 const SKINS_BG_HOVER      = 0x4a2a6a;
 const SKINS_TEXT_COLOR     = "#d0aaff";
-const SKINS_FONT_SIZE     = "28px";
 
 // ---- Locker panel ----
 const LOCKER_PANEL_W      = 900;
@@ -165,17 +182,23 @@ export default class MainMenuScene extends Phaser.Scene {
     this._onResize = null;
     this._onGlobalPointerDown = null;
 
-    // Title & buttons
+    // Title & status
     this._titleText = null;
-    this._btnImg = null;
-    this._btnBaseY = 0;
-    this._btnPressed = false;
-    this._btnPushOffset = 0;
     this._statusText = null;
 
-    // Custom button
-    this._customBtnBg = null;
-    this._customBtnText = null;
+    // Right-side buttons
+    this._playBtnBg = null;
+    this._playBtnText = null;
+    this._shopBtnBg = null;
+    this._shopBtnText = null;
+
+    // Skin preview (center)
+    this._skinPreviewBody = null;
+    this._skinPreviewArm = null;
+
+    // Play mode submenu
+    this._playMenuContainer = null;
+    this._playMenuOpen = false;
 
     // Party state
     this._client = null;
@@ -223,9 +246,9 @@ export default class MainMenuScene extends Phaser.Scene {
   }
 
   preload() {
-    this.load.image("btn_unpushed", "assets/images/StartButtonUnpushed.png");
-    this.load.image("btn_pushed",   "assets/images/StartButtonPushed.png");
     this.load.image("player_head",  "assets/images/PlayerHead.png");
+    this.load.image("player",       "assets/images/player.png");
+    this.load.image("arm",          "assets/images/arm.png");
     this.load.audio("click",        "assets/audio/click.mp3");
     if (!this.cache.audio.exists("lobby_music")) {
       this.load.audio("lobby_music", "assets/audio/lobby_music.mp3");
@@ -249,7 +272,7 @@ export default class MainMenuScene extends Phaser.Scene {
     this._bgVideo.play(true); // true = loop
     this._fitBgVideo();
 
-    // ---- Title ----
+    // ---- Title (top-center banner) ----
     this._titleText = this.add
       .text(0, 0, "Game Development Test", {
         fontFamily: "Arial, sans-serif",
@@ -258,7 +281,7 @@ export default class MainMenuScene extends Phaser.Scene {
       })
       .setOrigin(0.5);
 
-    // ---- Username input ----
+    // ---- Username input (bottom-center) ----
     this._nameLabel = this.add
       .text(0, 0, "USERNAME", {
         fontFamily: "Arial, sans-serif",
@@ -284,85 +307,81 @@ export default class MainMenuScene extends Phaser.Scene {
       this._setFocus("name");
     });
 
-    // ---- START button (pixel-art) ----
-    const BTN_PUSH_OFFSET_Y = 2 * START_BTN_SCALE;
+    // ---- Skin preview (full body, center of screen) ----
+    this._skinId = loadSkinId();
+    this._selectedSkinId = this._skinId;
 
-    this._btnImg = this.add.image(0, 0, "btn_unpushed");
-    this._btnImg.setScale(START_BTN_SCALE);
-    this._btnImg.setOrigin(0.5, 0.5);
-    this._btnImg.setInteractive({ useHandCursor: true });
-    this._btnPushOffset = BTN_PUSH_OFFSET_Y;
-    this._btnPressed = false;
+    this._skinPreviewBody = this.add.image(0, 0, "player");
+    this._skinPreviewBody.setScale(SKIN_PREVIEW_BODY_SCALE);
+    this._skinPreviewBody.setOrigin(0.5);
 
-    this._btnImg.on("pointerdown", () => {
-      if (this._starting) return;
-      if (this._partyMembers.length > 1) {
-        this._statusText?.setText("Use CUSTOM to start with your party");
-        return;
-      }
-      this._btnPressed = true;
-      this._btnImg.setTexture("btn_pushed");
-      this._btnImg.y = this._btnBaseY + this._btnPushOffset;
-    });
+    this._skinPreviewArm = this.add.image(0, 0, "arm");
+    this._skinPreviewArm.setScale(SKIN_PREVIEW_ARM_SCALE);
+    this._skinPreviewArm.setOrigin(0.5);
 
-    const releaseStartBtn = () => {
-      if (!this._btnPressed) return;
-      this._btnPressed = false;
-      this._btnImg.setTexture("btn_unpushed");
-      this._btnImg.y = this._btnBaseY;
-    };
+    this._updateSkinPreview();
 
-    this._btnImg.on("pointerup", () => {
-      if (this._starting) return;
-      if (!this._btnPressed) return;
-      releaseStartBtn();
-      this._startMatchmaking();
-    });
+    // ---- PLAY button (right side) ----
+    this._playBtnBg = this.add.rectangle(0, 0, RIGHT_BTN_W, RIGHT_BTN_H, PLAY_BG_COLOR, 1);
+    this._playBtnBg.setStrokeStyle(RIGHT_BTN_STROKE_W, 0x000000, 1);
+    this._playBtnBg.setInteractive({ useHandCursor: true });
 
-    this._btnImg.on("pointerout", () => {
-      releaseStartBtn();
-    });
-
-    // ---- CUSTOM button ----
-    this._customBtnBg = this.add.rectangle(0, 0, CUSTOM_BTN_W, CUSTOM_BTN_H, CUSTOM_BG_COLOR, 1);
-    this._customBtnBg.setStrokeStyle(CUSTOM_STROKE_WIDTH, CUSTOM_STROKE_COLOR, 1);
-    this._customBtnBg.setInteractive({ useHandCursor: true });
-
-    this._customBtnText = this.add
-      .text(0, 0, "CUSTOM", {
+    this._playBtnText = this.add
+      .text(0, 0, "PLAY", {
         fontFamily: "Arial Black, Arial, sans-serif",
-        fontSize: CUSTOM_FONT_SIZE,
-        color: CUSTOM_TEXT_COLOR,
+        fontSize: RIGHT_BTN_FONT_SIZE,
+        color: PLAY_TEXT_COLOR,
         fontStyle: "bold",
       })
       .setOrigin(0.5);
 
-    this._customBtnBg.on("pointerover", () => {
+    this._playBtnBg.on("pointerover", () => {
       if (this._starting) return;
-      this._customBtnBg.setFillStyle(CUSTOM_BG_HOVER, 1);
+      this._playBtnBg.setFillStyle(PLAY_BG_HOVER, 1);
+    });
+    this._playBtnBg.on("pointerout", () => {
+      this._playBtnBg.setFillStyle(PLAY_BG_COLOR, 1);
+    });
+    this._playBtnBg.on("pointerdown", () => {
+      if (this._starting || this._playMenuOpen || this._lockerOpen) return;
+      this._openPlayMenu();
     });
 
-    this._customBtnBg.on("pointerout", () => {
-      this._customBtnBg.setFillStyle(CUSTOM_BG_COLOR, 1);
-    });
+    // ---- SHOP button (right side) ----
+    this._shopBtnBg = this.add.rectangle(0, 0, RIGHT_BTN_W, RIGHT_BTN_H, SHOP_BG_COLOR, 1);
+    this._shopBtnBg.setStrokeStyle(RIGHT_BTN_STROKE_W, 0x000000, 1);
+    this._shopBtnBg.setInteractive({ useHandCursor: true });
 
-    this._customBtnBg.on("pointerdown", () => {
+    this._shopBtnText = this.add
+      .text(0, 0, "SHOP", {
+        fontFamily: "Arial Black, Arial, sans-serif",
+        fontSize: RIGHT_BTN_FONT_SIZE,
+        color: SHOP_TEXT_COLOR,
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5);
+
+    this._shopBtnBg.on("pointerover", () => {
       if (this._starting) return;
-      this._startCustomGame();
+      this._shopBtnBg.setFillStyle(SHOP_BG_HOVER, 1);
+    });
+    this._shopBtnBg.on("pointerout", () => {
+      this._shopBtnBg.setFillStyle(SHOP_BG_COLOR, 1);
+    });
+    this._shopBtnBg.on("pointerdown", () => {
+      if (this._starting) return;
+      this._statusText?.setText("Shop coming soon!");
     });
 
-    // ---- SKINS button ----
-    this._skinId = loadSkinId();
-    this._selectedSkinId = this._skinId;
-
-    this._skinsBtnBg = this.add.rectangle(0, 0, SKINS_BTN_W, SKINS_BTN_H, SKINS_BG_COLOR, 1);
-    this._skinsBtnBg.setStrokeStyle(2, 0x000000, 1);
+    // ---- SKINS button (right side) ----
+    this._skinsBtnBg = this.add.rectangle(0, 0, RIGHT_BTN_W, RIGHT_BTN_H, SKINS_BG_COLOR, 1);
+    this._skinsBtnBg.setStrokeStyle(RIGHT_BTN_STROKE_W, 0x000000, 1);
     this._skinsBtnBg.setInteractive({ useHandCursor: true });
 
     this._skinsBtnText = this.add
       .text(0, 0, "SKINS", {
         fontFamily: "Arial Black, Arial, sans-serif",
-        fontSize: SKINS_FONT_SIZE,
+        fontSize: RIGHT_BTN_FONT_SIZE,
         color: SKINS_TEXT_COLOR,
         fontStyle: "bold",
       })
@@ -629,34 +648,46 @@ export default class MainMenuScene extends Phaser.Scene {
       slot.nameText.setPosition(sx, sy + SLOT_SIZE / 2 + SLOT_NAME_OFFSET_Y);
     }
 
-    // ---- Center column (title, username, START, CUSTOM) ----
-    this._titleText?.setPosition(cx, cy + TITLE_OFFSET_Y);
-    this._nameLabel?.setPosition(cx, cy + NAME_LABEL_OFFSET_Y);
-    this._nameBg?.setPosition(cx, cy + NAME_INPUT_OFFSET_Y);
-    this._nameText?.setPosition(cx, cy + NAME_INPUT_OFFSET_Y);
+    // ---- Title (top-center) ----
+    this._titleText?.setPosition(cx, TITLE_Y);
 
-    this._btnBaseY = cy + START_BTN_OFFSET_Y;
-    if (this._btnImg) {
-      this._btnImg.x = cx;
-      this._btnImg.y = this._btnPressed
-        ? this._btnBaseY + this._btnPushOffset
-        : this._btnBaseY;
-    }
+    // ---- Username input (bottom-center) ----
+    const nameY = h - NAME_INPUT_FROM_BOTTOM;
+    this._nameBg?.setPosition(cx, nameY);
+    this._nameText?.setPosition(cx, nameY);
+    this._nameLabel?.setPosition(cx, nameY - NAME_INPUT_H / 2 - NAME_LABEL_GAP);
 
-    const customY = cy + CUSTOM_BTN_OFFSET_Y;
-    this._customBtnBg?.setPosition(cx, customY);
-    this._customBtnText?.setPosition(cx, customY);
+    // ---- Status text (above username area) ----
+    this._statusText?.setPosition(cx, nameY - NAME_INPUT_H / 2 - NAME_LABEL_GAP - 30);
 
-    this._statusText?.setPosition(cx, cy + STATUS_OFFSET_Y);
+    // ---- Skin preview (center) ----
+    this._skinPreviewBody?.setPosition(cx, cy - 10);
+    this._skinPreviewArm?.setPosition(cx + SKIN_PREVIEW_ARM_OFFSET_X, cy - 10 + SKIN_PREVIEW_ARM_OFFSET_Y);
 
-    // ---- SKINS button ----
-    const skinsY = cy + SKINS_BTN_OFFSET_Y;
-    this._skinsBtnBg?.setPosition(cx, skinsY);
-    this._skinsBtnText?.setPosition(cx, skinsY);
+    // ---- Right-side buttons (Play, Shop, Skins) ----
+    const rightX = w - RIGHT_BTN_MARGIN;
+    const rightStartY = cy - RIGHT_BTN_H - RIGHT_BTN_GAP; // center the 3 buttons vertically
+    const playY  = rightStartY;
+    const shopY  = rightStartY + RIGHT_BTN_H + RIGHT_BTN_GAP;
+    const skinsY = rightStartY + 2 * (RIGHT_BTN_H + RIGHT_BTN_GAP);
+
+    this._playBtnBg?.setPosition(rightX, playY);
+    this._playBtnText?.setPosition(rightX, playY);
+
+    this._shopBtnBg?.setPosition(rightX, shopY);
+    this._shopBtnText?.setPosition(rightX, shopY);
+
+    this._skinsBtnBg?.setPosition(rightX, skinsY);
+    this._skinsBtnText?.setPosition(rightX, skinsY);
 
     // ---- Locker panel (centered) ----
     if (this._lockerContainer) {
       this._lockerContainer.setPosition(cx, cy);
+    }
+
+    // ---- Play menu (centered) ----
+    if (this._playMenuContainer) {
+      this._playMenuContainer.setPosition(cx, cy);
     }
 
     // ---- Bottom-left: code input area ----
@@ -798,11 +829,8 @@ export default class MainMenuScene extends Phaser.Scene {
 
   _startMatchmaking() {
     if (this._starting) return;
-    if (this._partyMembers.length > 1) {
-      this._statusText?.setText("Use CUSTOM to start with your party");
-      return;
-    }
 
+    this._closePlayMenu();
     this._starting = true;
     this._username = this._getFinalUsername();
     this._statusText?.setText(`Entering queue as: ${this._username}`);
@@ -946,6 +974,116 @@ export default class MainMenuScene extends Phaser.Scene {
       this._handedOff = false;
       this._statusText?.setText("Failed to join game");
     }
+  }
+
+  // ============================================================
+  // Skin preview (center)
+  // ============================================================
+
+  _updateSkinPreview() {
+    const def = SKIN_CATALOG[this._skinId] || SKIN_CATALOG["default"];
+    if (def.tint) {
+      this._skinPreviewBody?.setTint(def.tint);
+      this._skinPreviewArm?.setTint(def.tint);
+    } else {
+      this._skinPreviewBody?.clearTint();
+      this._skinPreviewArm?.clearTint();
+    }
+  }
+
+  // ============================================================
+  // Play mode submenu
+  // ============================================================
+
+  _openPlayMenu() {
+    if (this._playMenuContainer) return;
+    this._playMenuOpen = true;
+
+    const cam = this.cameras?.main;
+    const cx = cam ? cam.centerX : 0;
+    const cy = cam ? cam.centerY : 0;
+
+    const children = [];
+
+    // Dark backdrop
+    const overlay = this.add.rectangle(0, 0, this.scale.width + 100, this.scale.height + 100, 0x000000, PLAY_MENU_BG_ALPHA);
+    overlay.setInteractive(); // block clicks behind
+    children.push(overlay);
+
+    // Matchmaking button
+    const mmY = -(PLAY_MENU_BTN_H / 2 + PLAY_MENU_GAP / 2);
+    const mmBg = this.add.rectangle(0, mmY, PLAY_MENU_BTN_W, PLAY_MENU_BTN_H, MATCHMAKING_BG, 1);
+    mmBg.setStrokeStyle(3, 0x000000, 1);
+    mmBg.setInteractive({ useHandCursor: true });
+    children.push(mmBg);
+
+    const mmText = this.add.text(0, mmY, "MATCHMAKING", {
+      fontFamily: "Arial Black, Arial, sans-serif",
+      fontSize: PLAY_MENU_FONT_SIZE,
+      color: MATCHMAKING_TEXT,
+      fontStyle: "bold",
+    }).setOrigin(0.5);
+    children.push(mmText);
+
+    mmBg.on("pointerover", () => mmBg.setFillStyle(MATCHMAKING_HOVER, 1));
+    mmBg.on("pointerout", () => mmBg.setFillStyle(MATCHMAKING_BG, 1));
+    mmBg.on("pointerdown", () => {
+      if (this._starting) return;
+      if (this._partyMembers.length > 1) {
+        this._statusText?.setText("Leave your party first for solo matchmaking");
+        this._closePlayMenu();
+        return;
+      }
+      this._startMatchmaking();
+    });
+
+    // Custom button
+    const customY = PLAY_MENU_BTN_H / 2 + PLAY_MENU_GAP / 2;
+    const customBg = this.add.rectangle(0, customY, PLAY_MENU_BTN_W, PLAY_MENU_BTN_H, CUSTOM_BG_COLOR, 1);
+    customBg.setStrokeStyle(3, 0x000000, 1);
+    customBg.setInteractive({ useHandCursor: true });
+    children.push(customBg);
+
+    const customText = this.add.text(0, customY, "CUSTOM", {
+      fontFamily: "Arial Black, Arial, sans-serif",
+      fontSize: PLAY_MENU_FONT_SIZE,
+      color: CUSTOM_TEXT_COLOR,
+      fontStyle: "bold",
+    }).setOrigin(0.5);
+    children.push(customText);
+
+    customBg.on("pointerover", () => customBg.setFillStyle(CUSTOM_BG_HOVER, 1));
+    customBg.on("pointerout", () => customBg.setFillStyle(CUSTOM_BG_COLOR, 1));
+    customBg.on("pointerdown", () => {
+      if (this._starting) return;
+      this._closePlayMenu();
+      this._startCustomGame();
+    });
+
+    // Back button
+    const backY = customY + PLAY_MENU_BTN_H / 2 + 50;
+    const backText = this.add.text(0, backY, "BACK", {
+      fontFamily: "Arial, sans-serif",
+      fontSize: "24px",
+      color: "#aaaaaa",
+      fontStyle: "bold",
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+    children.push(backText);
+
+    backText.on("pointerover", () => backText.setColor("#ffffff"));
+    backText.on("pointerout", () => backText.setColor("#aaaaaa"));
+    backText.on("pointerdown", () => this._closePlayMenu());
+
+    this._playMenuContainer = this.add.container(cx, cy, children);
+    this._playMenuContainer.setDepth(900);
+  }
+
+  _closePlayMenu() {
+    if (this._playMenuContainer) {
+      this._playMenuContainer.destroy(true);
+      this._playMenuContainer = null;
+    }
+    this._playMenuOpen = false;
   }
 
   // ============================================================
@@ -1095,6 +1233,7 @@ export default class MainMenuScene extends Phaser.Scene {
     }
     this._lockerCards = null;
     this._lockerOpen = false;
+    this._updateSkinPreview();
   }
 
   // ============================================================
@@ -1160,7 +1299,7 @@ export default class MainMenuScene extends Phaser.Scene {
 
   _handleNameKey(key) {
     if (key === "Enter") {
-      this._startMatchmaking();
+      this._setFocus(null);
       return;
     }
     if (key === "Escape") {
@@ -1253,8 +1392,9 @@ export default class MainMenuScene extends Phaser.Scene {
     } catch (_) {}
     this._caretTimer = null;
 
-    // Close locker if open
+    // Close locker and play menu if open
     this._closeLocker();
+    this._closePlayMenu();
 
     // Settings overlay
     try { this._settingsOverlay?.destroy(); } catch (_) {}
