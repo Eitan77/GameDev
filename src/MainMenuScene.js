@@ -2,6 +2,7 @@ import Phaser from "phaser";
 import { Client } from "@colyseus/sdk";
 import { SKIN_CATALOG, SKIN_IDS, loadSkinId, saveSkinId } from "./skinCatalog.js";
 import { SettingsOverlay, loadSettings } from "./settings.js";
+import { loadCoins, loadUnlockedSkins, purchaseSkin, isSkinUnlocked } from "./shopData.js";
 
 // ============================================================
 // MainMenuScene
@@ -136,6 +137,19 @@ const SKINS_BG_COLOR      = 0x2e1a4a;
 const SKINS_BG_HOVER      = 0x4a2a6a;
 const SKINS_TEXT_COLOR     = "#d0aaff";
 
+// ---- Shop panel ----
+const SHOP_PANEL_W        = 900;
+const SHOP_PANEL_H        = 520;
+const SHOP_BG_PANEL_COLOR = 0x1a1510;
+const SHOP_GRID_COLS      = 5;
+const SHOP_CARD_W         = 140;
+const SHOP_CARD_H         = 170;
+const SHOP_CARD_GAP       = 16;
+const SHOP_TITLE_SIZE     = "32px";
+const SHOP_PRICE_SIZE     = "14px";
+const SHOP_COINS_SIZE     = "24px";
+const SHOP_OWNED_COLOR    = "#88ff88";
+
 // ---- Locker panel ----
 const LOCKER_PANEL_W      = 900;
 const LOCKER_PANEL_H      = 520;
@@ -235,6 +249,11 @@ export default class MainMenuScene extends Phaser.Scene {
     this._lockerContainer = null;
     this._lockerOpen = false;
     this._selectedSkinId = "default";
+    this._lockerEquipText = null;
+
+    // Shop
+    this._shopContainer = null;
+    this._shopOpen = false;
 
     // Settings
     this._settingsBtnBg = null;
@@ -369,8 +388,8 @@ export default class MainMenuScene extends Phaser.Scene {
       this._shopBtnBg.setFillStyle(SHOP_BG_COLOR, 1);
     });
     this._shopBtnBg.on("pointerdown", () => {
-      if (this._starting) return;
-      this._statusText?.setText("Shop coming soon!");
+      if (this._starting || this._shopOpen || this._lockerOpen) return;
+      this._openShop();
     });
 
     // ---- SKINS button (right side) ----
@@ -688,6 +707,11 @@ export default class MainMenuScene extends Phaser.Scene {
     // ---- Play menu (centered) ----
     if (this._playMenuContainer) {
       this._playMenuContainer.setPosition(cx, cy);
+    }
+
+    // ---- Shop panel (centered) ----
+    if (this._shopContainer) {
+      this._shopContainer.setPosition(cx, cy);
     }
 
     // ---- Bottom-left: code input area ----
@@ -1087,6 +1111,162 @@ export default class MainMenuScene extends Phaser.Scene {
   }
 
   // ============================================================
+  // Shop overlay
+  // ============================================================
+
+  _refreshCoinDisplay() {
+    if (!this._coinText) return;
+    const coins = loadCoins();
+    this._coinText.setText(`${coins} coins`);
+  }
+
+  _openShop() {
+    if (this._shopContainer) return;
+    this._shopOpen = true;
+
+    const cam = this.cameras?.main;
+    const cx = cam ? cam.centerX : 0;
+    const cy = cam ? cam.centerY : 0;
+
+    const children = [];
+    const coins = loadCoins();
+    const unlocked = loadUnlockedSkins();
+
+    // Dark backdrop
+    const overlay = this.add.rectangle(0, 0, SHOP_PANEL_W + 40, SHOP_PANEL_H + 40, 0x000000, 0.7);
+    overlay.setInteractive(); // block clicks behind
+    children.push(overlay);
+
+    // Panel background
+    const panelBg = this.add.rectangle(0, 0, SHOP_PANEL_W, SHOP_PANEL_H, SHOP_BG_PANEL_COLOR, 1);
+    panelBg.setStrokeStyle(3, 0x665522, 1);
+    children.push(panelBg);
+
+    // Title
+    const title = this.add.text(0, -SHOP_PANEL_H / 2 + 30, "SHOP", {
+      fontFamily: "Arial Black, Arial, sans-serif",
+      fontSize: SHOP_TITLE_SIZE,
+      color: "#ffe0aa",
+      fontStyle: "bold",
+    }).setOrigin(0.5);
+    children.push(title);
+
+    // Coin balance display (top of shop)
+    const coinLabel = this.add.text(0, -SHOP_PANEL_H / 2 + 62, `${coins} coins`, {
+      fontFamily: "Arial, sans-serif",
+      fontSize: SHOP_COINS_SIZE,
+      color: "#ffd700",
+    }).setOrigin(0.5);
+    children.push(coinLabel);
+
+    // Close button
+    const closeBtn = this.add.text(SHOP_PANEL_W / 2 - 24, -SHOP_PANEL_H / 2 + 12, "X", {
+      fontFamily: "Arial, sans-serif",
+      fontSize: "24px",
+      color: "#ff6666",
+      fontStyle: "bold",
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+    closeBtn.on("pointerdown", () => this._closeShop());
+    children.push(closeBtn);
+
+    // Grid of skin cards
+    const totalW = SHOP_GRID_COLS * SHOP_CARD_W + (SHOP_GRID_COLS - 1) * SHOP_CARD_GAP;
+    const startX = -totalW / 2 + SHOP_CARD_W / 2;
+    const startY = -SHOP_PANEL_H / 2 + 100;
+
+    SKIN_IDS.forEach((skinId, i) => {
+      const col = i % SHOP_GRID_COLS;
+      const row = Math.floor(i / SHOP_GRID_COLS);
+      const cardX = startX + col * (SHOP_CARD_W + SHOP_CARD_GAP);
+      const cardY = startY + row * (SHOP_CARD_H + SHOP_CARD_GAP) + SHOP_CARD_H / 2;
+
+      const def = SKIN_CATALOG[skinId];
+      const owned = unlocked.includes(skinId);
+      const canAfford = coins >= (def.price || 0);
+
+      // Card background
+      const cardBg = this.add.rectangle(cardX, cardY, SHOP_CARD_W, SHOP_CARD_H, 0x2a2210, 1);
+      cardBg.setStrokeStyle(2, owned ? 0x88ff88 : 0x665522, owned ? 0.8 : 0.5);
+      children.push(cardBg);
+
+      // Player head preview
+      const head = this.add.image(cardX, cardY - 20, "player_head");
+      const maxDim = SHOP_CARD_W - 40;
+      const scale = Math.min(maxDim / head.width, maxDim / head.height);
+      head.setScale(scale);
+      if (def.tint) head.setTint(def.tint);
+      children.push(head);
+
+      // Skin name
+      const nameLabel = this.add.text(cardX, cardY + SHOP_CARD_H / 2 - 40, def.name, {
+        fontFamily: "Arial, sans-serif",
+        fontSize: SHOP_PRICE_SIZE,
+        color: "#cccccc",
+      }).setOrigin(0.5);
+      children.push(nameLabel);
+
+      if (owned) {
+        // Show "OWNED" label
+        const ownedLabel = this.add.text(cardX, cardY + SHOP_CARD_H / 2 - 18, "OWNED", {
+          fontFamily: "Arial, sans-serif",
+          fontSize: "12px",
+          color: SHOP_OWNED_COLOR,
+          fontStyle: "bold",
+        }).setOrigin(0.5);
+        children.push(ownedLabel);
+      } else {
+        // Show price
+        const priceLabel = this.add.text(cardX, cardY + SHOP_CARD_H / 2 - 18, `${def.price} coins`, {
+          fontFamily: "Arial, sans-serif",
+          fontSize: "12px",
+          color: canAfford ? "#ffd700" : "#ff6666",
+        }).setOrigin(0.5);
+        children.push(priceLabel);
+
+        // BUY button on the card
+        const buyBg = this.add.rectangle(cardX, cardY + SHOP_CARD_H / 2 - 2, 80, 24,
+          canAfford ? 0x4a3a1a : 0x333333, 1);
+        buyBg.setStrokeStyle(1, canAfford ? 0xffd700 : 0x666666, 0.6);
+        if (canAfford) buyBg.setInteractive({ useHandCursor: true });
+        children.push(buyBg);
+
+        const buyText = this.add.text(cardX, cardY + SHOP_CARD_H / 2 - 2, "BUY", {
+          fontFamily: "Arial, sans-serif",
+          fontSize: "12px",
+          color: canAfford ? "#ffd700" : "#666666",
+          fontStyle: "bold",
+        }).setOrigin(0.5);
+        children.push(buyText);
+
+        if (canAfford) {
+          buyBg.on("pointerover", () => buyBg.setFillStyle(0x6a5a2a, 1));
+          buyBg.on("pointerout", () => buyBg.setFillStyle(0x4a3a1a, 1));
+          buyBg.on("pointerdown", () => {
+            const success = purchaseSkin(skinId, def.price);
+            if (success) {
+              // Close and reopen to refresh state
+              this._closeShop();
+              this._openShop();
+            }
+          });
+        }
+      }
+    });
+
+    this._shopContainer = this.add.container(cx, cy, children);
+    this._shopContainer.setDepth(1000);
+  }
+
+  _closeShop() {
+    if (this._shopContainer) {
+      this._shopContainer.destroy(true);
+      this._shopContainer = null;
+    }
+    this._shopOpen = false;
+    this._refreshCoinDisplay();
+  }
+
+  // ============================================================
   // Skin locker panel
   // ============================================================
 
@@ -1137,6 +1317,8 @@ export default class MainMenuScene extends Phaser.Scene {
 
     this._lockerCards = [];
 
+    const unlockedSet = loadUnlockedSkins();
+
     SKIN_IDS.forEach((skinId, i) => {
       const col = i % LOCKER_GRID_COLS;
       const row = Math.floor(i / LOCKER_GRID_COLS);
@@ -1144,6 +1326,7 @@ export default class MainMenuScene extends Phaser.Scene {
       const cardY = startY + row * (LOCKER_CARD_H + LOCKER_CARD_GAP) + LOCKER_CARD_H / 2;
 
       const def = SKIN_CATALOG[skinId];
+      const isUnlocked = unlockedSet.includes(skinId);
 
       // Card background
       const cardBg = this.add.rectangle(cardX, cardY, LOCKER_CARD_W, LOCKER_CARD_H, 0x222244, 1);
@@ -1158,19 +1341,20 @@ export default class MainMenuScene extends Phaser.Scene {
       const scale = Math.min(maxDim / head.width, maxDim / head.height);
       head.setScale(scale);
       if (def.tint) head.setTint(def.tint);
+      if (!isUnlocked) head.setAlpha(0.3);
       children.push(head);
 
       // Skin name
       const nameLabel = this.add.text(cardX, cardY + LOCKER_CARD_H / 2 - 24, def.name, {
         fontFamily: "Arial, sans-serif",
         fontSize: LOCKER_NAME_SIZE,
-        color: "#cccccc",
+        color: isUnlocked ? "#cccccc" : "#666666",
       }).setOrigin(0.5);
       children.push(nameLabel);
 
-      // Equipped indicator
+      // Equipped / Locked indicator
       let equippedLabel = null;
-      if (skinId === this._skinId) {
+      if (skinId === this._skinId && isUnlocked) {
         equippedLabel = this.add.text(cardX, cardY - LOCKER_CARD_H / 2 + 14, "EQUIPPED", {
           fontFamily: "Arial, sans-serif",
           fontSize: "10px",
@@ -1178,6 +1362,14 @@ export default class MainMenuScene extends Phaser.Scene {
           fontStyle: "bold",
         }).setOrigin(0.5);
         children.push(equippedLabel);
+      } else if (!isUnlocked) {
+        const lockLabel = this.add.text(cardX, cardY - LOCKER_CARD_H / 2 + 14, "\uD83D\uDD12 LOCKED", {
+          fontFamily: "Arial, sans-serif",
+          fontSize: "10px",
+          color: "#ff6666",
+          fontStyle: "bold",
+        }).setOrigin(0.5);
+        children.push(lockLabel);
       }
 
       cardBg.on("pointerdown", () => {
@@ -1195,17 +1387,21 @@ export default class MainMenuScene extends Phaser.Scene {
     equipBg.setInteractive({ useHandCursor: true });
     children.push(equipBg);
 
-    const equipText = this.add.text(0, equipY, "EQUIP", {
+    const isInitialUnlocked = isSkinUnlocked(this._selectedSkinId);
+    const equipText = this.add.text(0, equipY,
+      isInitialUnlocked ? "EQUIP" : "PURCHASE IN SHOP", {
       fontFamily: "Arial Black, Arial, sans-serif",
       fontSize: "22px",
-      color: "#e0ffe0",
+      color: isInitialUnlocked ? "#e0ffe0" : "#ff6666",
       fontStyle: "bold",
     }).setOrigin(0.5);
     children.push(equipText);
+    this._lockerEquipText = equipText;
 
     equipBg.on("pointerover", () => equipBg.setFillStyle(0x3a8f3a, 1));
     equipBg.on("pointerout", () => equipBg.setFillStyle(0x2a6b2a, 1));
     equipBg.on("pointerdown", () => {
+      if (!isSkinUnlocked(this._selectedSkinId)) return;
       this._skinId = this._selectedSkinId;
       saveSkinId(this._skinId);
       if (this._partyRoom) {
@@ -1224,6 +1420,12 @@ export default class MainMenuScene extends Phaser.Scene {
       const isSelected = card.skinId === this._selectedSkinId;
       card.cardBg.setStrokeStyle(3, isSelected ? LOCKER_HIGHLIGHT : 0x444466, isSelected ? 1 : 0.5);
     }
+    // Update equip button text based on lock state
+    if (this._lockerEquipText) {
+      const unlocked = isSkinUnlocked(this._selectedSkinId);
+      this._lockerEquipText.setText(unlocked ? "EQUIP" : "PURCHASE IN SHOP");
+      this._lockerEquipText.setColor(unlocked ? "#e0ffe0" : "#ff6666");
+    }
   }
 
   _closeLocker() {
@@ -1232,6 +1434,7 @@ export default class MainMenuScene extends Phaser.Scene {
       this._lockerContainer = null;
     }
     this._lockerCards = null;
+    this._lockerEquipText = null;
     this._lockerOpen = false;
     this._updateSkinPreview();
   }
@@ -1392,9 +1595,10 @@ export default class MainMenuScene extends Phaser.Scene {
     } catch (_) {}
     this._caretTimer = null;
 
-    // Close locker and play menu if open
+    // Close locker, play menu, and shop if open
     this._closeLocker();
     this._closePlayMenu();
+    this._closeShop();
 
     // Settings overlay
     try { this._settingsOverlay?.destroy(); } catch (_) {}

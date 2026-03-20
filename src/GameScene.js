@@ -10,6 +10,7 @@ import GunPowerUp from "./GunPowerUp.js";
 import { preloadGuns } from "./gunCatalog.js";
 import VisibilityManager from "./VisibilityManager.js";
 import { loadSettings } from "./settings.js";
+import { addCoins, COINS_PER_GAME } from "./shopData.js";
 
 // connects to same host (works on LAN); VITE_SERVER_URL overrides for production
 const COLYSEUS_URL = import.meta.env.VITE_SERVER_URL || `${window.location.protocol}//${window.location.hostname}:2567`;
@@ -584,6 +585,12 @@ export default class GameScene extends Phaser.Scene {
       const scores = Array.isArray(msg?.scores) ? msg.scores : [];
       const gameOver = !!msg?.gameOver;
       const winnerId = msg?.winnerId || null;
+
+      // ---- Award coins when a full game ends ----
+      if (gameOver) {
+        const newBalance = addCoins(COINS_PER_GAME);
+        console.log(`[GameScene] Game over — awarded ${COINS_PER_GAME} coins. Balance: ${newBalance}`);
+      }
 
       // Stop sending inputs
       this.dragActive = false;
