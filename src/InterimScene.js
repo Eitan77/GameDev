@@ -160,7 +160,7 @@ export default class InterimScene extends Phaser.Scene {
       this._room.state.players.forEach((st, sid) => {
         this._scores.push({ sid, name: st.name || "Player", points: Number(st.points) || 0 });
       });
-      this._playerCount = Math.max(1, Math.min(4, this._scores.length || Number(data?.playerCount) || 1));
+      this._playerCount = Math.max(1, Math.min(4, Math.max(this._scores.length, Number(data?.playerCount) || 1)));
     } else {
       // Fallback: state not available yet, use matchmaking count
       this._scores      = null;
@@ -226,6 +226,18 @@ export default class InterimScene extends Phaser.Scene {
     const H = this.scale.height;  // 800
 
     this.input.on("gameobjectdown", () => this.sound.play("click", { volume: 2 }));
+
+    // Refresh scores/count from live state — more players may have joined during preload
+    if (this._room?.state?.players) {
+      const liveCount = this._room.state.players.size;
+      if (liveCount > (this._scores?.length ?? 0)) {
+        this._scores = [];
+        this._room.state.players.forEach((st, sid) => {
+          this._scores.push({ sid, name: st.name || "Player", points: Number(st.points) || 0 });
+        });
+        this._playerCount = Math.min(4, Math.max(this._playerCount, liveCount));
+      }
+    }
 
     // ── Resolve player names now (create() runs after state is settled) ──
     // _scores may have been built in init() before setName was reflected back
