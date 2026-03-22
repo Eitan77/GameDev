@@ -264,6 +264,7 @@ export default class PlayerSim {
     this.holdPastMaxAngleRad = 0;
     this.leftCornerGrace = 0;
     this.rightCornerGrace = 0;
+    this.tiltRampMult = 0;
   }
 
   destroySwingArm() {
@@ -1120,7 +1121,14 @@ export default class PlayerSim {
       // Compute the desired angle this tick
       // tiltSensitivity 0→0.5x, 0.5→1x, 1→2x speed
       const tiltSpeedMult = 0.5 + this.tiltSensitivity * 1.5;
-      const tiltSpeed = TILT_ROTATE_SPEED_RAD_PER_SEC * tiltSpeedMult;
+      // Ramp tilt speed linearly: slow when upright, full speed at max tilt.
+      // Speed can only increase during a tilt session — never dips back down
+      // (e.g. tilting left-to-right won't slow at 0 degrees).
+      const tiltFraction = Math.abs(angleNow) / TILT_MAX_ANGLE_RAD;
+      const TILT_MIN_SPEED_FRAC = 0.35;
+      const angleRamp = TILT_MIN_SPEED_FRAC + (1 - TILT_MIN_SPEED_FRAC) * clamp(tiltFraction, 0, 1);
+      this.tiltRampMult = Math.max(this.tiltRampMult, angleRamp);
+      const tiltSpeed = TILT_ROTATE_SPEED_RAD_PER_SEC * tiltSpeedMult * this.tiltRampMult;
       const wantAngle = clamp(tiltDir * TILT_MAX_ANGLE_RAD, -TILT_MAX_ANGLE_RAD, +TILT_MAX_ANGLE_RAD);
       const diff = wrapRadPi(wantAngle - angleNow);
       let step = clamp(diff, -tiltSpeed * fixedDt, +tiltSpeed * fixedDt);
