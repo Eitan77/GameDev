@@ -157,6 +157,7 @@ export default class PlayerSim {
 
     this.leftCornerGrace = 0;
     this.rightCornerGrace = 0;
+    this.tiltRampMult = 1;
 
     // Suppresses in-air auto-balance torque right after jumping.
     this.justJumpedTimer = 0;
@@ -264,7 +265,7 @@ export default class PlayerSim {
     this.holdPastMaxAngleRad = 0;
     this.leftCornerGrace = 0;
     this.rightCornerGrace = 0;
-    this.tiltRampMult = 0;
+    this.tiltRampMult = 1;
   }
 
   destroySwingArm() {
